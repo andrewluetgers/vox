@@ -1,22 +1,23 @@
 # vox
 
-Local streaming text-to-speech CLI. Kokoro-82M via [MLX](https://github.com/ml-explore/mlx)
-on Apple Silicon — no cloud, no API keys, synthesis runs ~3× faster than
-realtime and starts speaking in about 5 seconds.
+Local streaming text-to-speech CLI in a single Rust binary. Kokoro-82M via
+ONNX Runtime — no cloud, no API keys, no Python. First word in ~1–3 seconds,
+synthesis 2.5–3.6× faster than realtime on an M1 Pro.
 
 Default voice is `bm_george`, a mature British male.
 
 ## Install
 
-Requires macOS on Apple Silicon, [uv](https://docs.astral.sh/uv/), and
-`ffplay` (`brew install ffmpeg`) for streaming playback.
-
 ```sh
 git clone https://github.com/andrewluetgers/vox.git
-uv tool install --editable ./vox
+cd vox
+cargo build --release
+cp target/release/vox ~/.local/bin/
+vox --setup   # one-time model download (~350 MB) to ~/Library/Caches/vox
 ```
 
-This puts a `vox` command on your PATH (via `~/.local/bin`).
+The binary is ~34 MB and self-contained (ONNX Runtime statically linked,
+G2P built in). Model weights live outside the binary and download once.
 
 ## Usage
 
@@ -28,6 +29,7 @@ vox -c                       # read the clipboard
 vox -v bf_emma -s 1.2 "…"    # other voice, faster pace
 vox --no-play -o out.wav "…" # render to file silently
 vox --no-save "…"            # just speak, keep nothing
+vox --list-voices
 ```
 
 Voices: `bm_george`, `bm_lewis`, `bm_daniel`, `bm_fable`, `bf_emma`,
@@ -36,17 +38,23 @@ Voices: `bm_george`, `bm_lewis`, `bm_daniel`, `bm_fable`, `bf_emma`,
 
 ## Where things go
 
-- Spoken audio is saved to `~/Music/vox/` with timestamped names
-  (override with `VOX_AUDIO_DIR`, or skip saving with `--no-save`).
-- Model weights (~600 MB) download once to the Hugging Face cache.
-  `VOX_HF_CACHE` points the cache somewhere else (e.g. an external drive);
-  on exFAT volumes vox automatically disables the HF xet downloader,
-  which fails there.
+- Spoken audio is saved to `~/Music/vox/` (override with `VOX_AUDIO_DIR`,
+  or pass `--no-save`).
+- Models cache in `~/Library/Caches/vox` (override with `VOX_CACHE_DIR`).
+  `VOX_MODEL_FILE` selects an alternate model file — e.g.
+  `kokoro-v1.0.int8.onnx` for the 92 MB int8 model, which is smaller but
+  ~2× slower than fp32 on Apple Silicon.
 
-## Latency (M1 Pro, 32 GB)
+## Performance (M1 Pro, 32 GB)
 
 | Stage | Time |
 |---|---|
-| Model load | ~3 s |
-| First sound | ~5 s |
-| Synthesis pace | ~3× faster than realtime, streams while generating |
+| Model load | ~0.4 s |
+| First sound | ~1–3 s (first sentence synthesizes alone) |
+| Synthesis pace | 2.5–3.6× faster than realtime, streams while playing |
+
+## History
+
+v0.1 was a Python implementation on mlx-audio (see git history). The Rust
+port cut first-sound latency from ~8 s to ~1–3 s and replaced a Python
+environment with one binary.

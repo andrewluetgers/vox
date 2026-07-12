@@ -1,7 +1,3 @@
-.venv/
-__pycache__/
-*.pyc
-dist/
-*.egg-info/
-.DS_Store
+/target
 *.wav
+.DS_Store

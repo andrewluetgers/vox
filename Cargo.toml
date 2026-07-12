@@ -1,0 +1,21 @@
+[package]
+name = "vox"
+version = "0.2.0"
+edition = "2021"
+description = "Local streaming text-to-speech CLI — Kokoro via ONNX, single binary"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+dirs = "5"
+futures = "0.3"
+hound = "3.5"
+kokoro-tts = "0.3"
+rodio = "0.19"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+ureq = "2"
+
+[profile.release]
+lto = true
+strip = true
