@@ -340,6 +340,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4bfbf56724aa9eca8afa4fcfadeb479e722935bb2a0900c2d37e0cc477af0688"
 
 [[package]]
+name = "cmudict-fast"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c9f73004e928ed46c3e7fd7406d2b12c8674153295f08af084b49860276dc02"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1022,6 +1031,7 @@ dependencies = [
  "bincode",
  "cc",
  "chinese-number",
+ "cmudict-fast",
  "futures",
  "jieba-rs",
  "log",
