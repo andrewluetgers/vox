@@ -38,10 +38,10 @@ struct Args {
     #[arg(short, long)]
     clip: bool,
     /// Voice (see --list-voices)
-    #[arg(short, long, default_value = "bm_george")]
+    #[arg(short, long, env = "VOX_VOICE", default_value = "bm_george")]
     voice: String,
     /// Speech speed
-    #[arg(short, long, default_value_t = 1.0)]
+    #[arg(short, long, env = "VOX_SPEED", default_value_t = 1.0)]
     speed: f32,
     /// Write audio to this wav file
     #[arg(short, long)]
@@ -55,9 +55,62 @@ struct Args {
     /// List available voices
     #[arg(long)]
     list_voices: bool,
-    /// Download model files (~115 MB) and exit
+    /// Download model files (~350 MB) and exit
     #[arg(long)]
     setup: bool,
+}
+
+/// Pronunciation fixes: lines of `word = respelling` in ~/.config/vox/lexicon.txt
+/// (or $VOX_LEXICON). Matches whole words, case-insensitive, before synthesis.
+fn load_lexicon() -> Vec<(String, String)> {
+    let path = std::env::var_os("VOX_LEXICON")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            dirs::config_dir()
+                .unwrap_or_default()
+                .join("vox")
+                .join("lexicon.txt")
+        });
+    let Ok(content) = fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    content
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            let (word, respell) = line.split_once('=')?;
+            Some((word.trim().to_lowercase(), respell.trim().to_string()))
+        })
+        .collect()
+}
+
+fn apply_lexicon(text: &str, lex: &[(String, String)]) -> String {
+    if lex.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut word = String::new();
+    for ch in text.chars().chain(std::iter::once('\0')) {
+        if ch.is_alphanumeric() || ch == '\'' {
+            word.push(ch);
+        } else {
+            if !word.is_empty() {
+                let lower = word.to_lowercase();
+                match lex.iter().find(|(k, _)| *k == lower) {
+                    Some((_, respell)) => out.push_str(respell),
+                    None => out.push_str(&word),
+                }
+                word.clear();
+            }
+            if ch != '\0' {
+                out.push(ch);
+            }
+        }
+    }
+    out
 }
 
 fn voice_for(name: &str, speed: f32) -> Result<Voice> {
@@ -124,10 +177,10 @@ fn ensure_models() -> Result<(PathBuf, PathBuf)> {
     fs::create_dir_all(&dir)?;
     let model_file =
         std::env::var("VOX_MODEL_FILE").unwrap_or_else(|_| MODEL_FILE.to_string());
-    let model = dir.join(model_file);
+    let model = dir.join(&model_file);
     let voices = dir.join(VOICES_FILE);
     if !model.exists() {
-        download(&format!("{RELEASE_BASE}/{MODEL_FILE}"), &model)?;
+        download(&format!("{RELEASE_BASE}/{model_file}"), &model)?;
     }
     if !voices.exists() {
         download(&format!("{RELEASE_BASE}/{VOICES_FILE}"), &voices)?;
@@ -260,7 +313,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let text = read_text(&args)?;
+    let text = apply_lexicon(&read_text(&args)?, &load_lexicon());
     let voice = voice_for(&args.voice, args.speed)?;
 
     let t0 = Instant::now();

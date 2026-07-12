@@ -36,6 +36,27 @@ Voices: `bm_george`, `bm_lewis`, `bm_daniel`, `bm_fable`, `bf_emma`,
 `bf_isabella` (British); `am_adam`, `am_michael`, `af_heart`, `af_bella`,
 `af_nicole`, `af_sarah` (American).
 
+## Pronunciation fixes
+
+The G2P is dictionary-based, so unusual words, names, and jargon can come
+out oddly. Fix them with a lexicon at `~/.config/vox/lexicon.txt`
+(override path with `VOX_LEXICON`) — one `word = respelling` per line,
+matched whole-word and case-insensitively before synthesis:
+
+```
+# how it should sound, spelled phonetically
+kokoro = koh-KOH-roh
+qwen = kwen
+nginx = engine-ex
+```
+
+## Defaults via environment
+
+```sh
+export VOX_VOICE=bm_george   # default voice
+export VOX_SPEED=1.15        # default speech speed
+```
+
 ## Where things go
 
 - Spoken audio is saved to `~/Music/vox/` (override with `VOX_AUDIO_DIR`,
