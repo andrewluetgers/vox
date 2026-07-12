@@ -2,7 +2,7 @@
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use kokoro_tts::{KokoroTts, Voice};
+use kokoros::tts::koko::TTSKoko;
 use rodio::{buffer::SamplesBuffer, OutputStream, Sink};
 use std::{
     fs,
@@ -13,11 +13,11 @@ use std::{
 };
 
 const SAMPLE_RATE: u32 = 24000;
-const RELEASE_BASE: &str = "https://github.com/mzdk100/kokoro/releases/download/V1.0";
+const RELEASE_BASE: &str =
+    "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0";
 // fp32 over int8: ~2x faster on Apple Silicon CPUs despite the bigger download
 const MODEL_FILE: &str = "kokoro-v1.0.onnx";
-const VOICES_FILE: &str = "voices.bin";
-const MAX_CHUNK_CHARS: usize = 400;
+const VOICES_FILE: &str = "voices-v1.0.bin";
 
 const VOICE_NAMES: &[&str] = &[
     // British male / female
@@ -113,22 +113,14 @@ fn apply_lexicon(text: &str, lex: &[(String, String)]) -> String {
     out
 }
 
-fn voice_for(name: &str, speed: f32) -> Result<Voice> {
-    Ok(match name {
-        "bm_george" => Voice::BmGeorge(speed),
-        "bm_lewis" => Voice::BmLewis(speed),
-        "bm_daniel" => Voice::BmDaniel(speed),
-        "bm_fable" => Voice::BmFable(speed),
-        "bf_emma" => Voice::BfEmma(speed),
-        "bf_isabella" => Voice::BfIsabella(speed),
-        "am_adam" => Voice::AmAdam(speed),
-        "am_michael" => Voice::AmMichael(speed),
-        "af_heart" => Voice::AfHeart(speed),
-        "af_bella" => Voice::AfBella(speed),
-        "af_nicole" => Voice::AfNicole(speed),
-        "af_sarah" => Voice::AfSarah(speed),
-        _ => bail!("unknown voice '{name}' (try --list-voices)"),
-    })
+/// espeak voice from the vox voice prefix: bm_/bf_ British, am_/af_ American.
+/// Note: this espeak-ng build has no bare "en-gb"; RP is the British voice.
+fn lang_for(voice: &str) -> &'static str {
+    if voice.starts_with('b') {
+        "en-gb-x-rp"
+    } else {
+        "en-us"
+    }
 }
 
 fn cache_dir() -> PathBuf {
@@ -215,43 +207,6 @@ fn atty_stdin() -> bool {
     std::io::stdin().is_terminal()
 }
 
-/// Split on sentence boundaries into chunks the model handles well.
-/// The first chunk is a single sentence so audio starts as soon as possible.
-fn chunk_text(text: &str) -> Vec<String> {
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-    let mut sentence = String::new();
-    for ch in text.chars() {
-        sentence.push(ch);
-        if matches!(ch, '.' | '!' | '?' | ';' | ':' | '\n') {
-            flush_sentence(&mut chunks, &mut current, &mut sentence);
-            if chunks.is_empty() && !current.is_empty() {
-                chunks.push(std::mem::take(&mut current));
-            }
-        }
-    }
-    flush_sentence(&mut chunks, &mut current, &mut sentence);
-    if !current.trim().is_empty() {
-        chunks.push(current.trim().to_string());
-    }
-    chunks
-}
-
-fn flush_sentence(chunks: &mut Vec<String>, current: &mut String, sentence: &mut String) {
-    let s = sentence.trim();
-    if !s.is_empty() {
-        if !current.is_empty() && current.len() + s.len() + 1 > MAX_CHUNK_CHARS {
-            chunks.push(current.trim().to_string());
-            current.clear();
-        }
-        if !current.is_empty() {
-            current.push(' ');
-        }
-        current.push_str(s);
-    }
-    sentence.clear();
-}
-
 fn out_path(args: &Args, text: &str) -> Result<PathBuf> {
     if let Some(out) = &args.out {
         return Ok(out.clone());
@@ -307,6 +262,14 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // espeak-ng looks for its data via this env var (then cwd / exe dir);
+    // we keep espeak-ng-data in the vox cache dir, installed by --setup docs.
+    if std::env::var_os("PIPER_ESPEAKNG_DATA_DIRECTORY").is_none()
+        && cache_dir().join("espeak-ng-data").exists()
+    {
+        std::env::set_var("PIPER_ESPEAKNG_DATA_DIRECTORY", cache_dir());
+    }
+
     let (model_path, voices_path) = ensure_models()?;
     if args.setup {
         eprintln!("Models ready in {}", cache_dir().display());
@@ -314,12 +277,16 @@ async fn main() -> Result<()> {
     }
 
     let text = apply_lexicon(&read_text(&args)?, &load_lexicon());
-    let voice = voice_for(&args.voice, args.speed)?;
+    if !VOICE_NAMES.contains(&args.voice.as_str()) {
+        bail!("unknown voice '{}' (try --list-voices)", args.voice);
+    }
 
     let t0 = Instant::now();
-    let tts = KokoroTts::new(&model_path, &voices_path)
-        .await
-        .context("failed to load model")?;
+    let tts = TTSKoko::new(
+        model_path.to_str().context("bad model path")?,
+        voices_path.to_str().context("bad voices path")?,
+    )
+    .await;
     let load = t0.elapsed();
     eprintln!("Model loaded in {:.2}s", load.as_secs_f32());
 
@@ -333,22 +300,33 @@ async fn main() -> Result<()> {
 
     let mut all_samples: Vec<f32> = Vec::new();
     let mut first_audio: Option<f32> = None;
-    for chunk in chunk_text(&text) {
-        let (audio, _took) = tts.synth(&chunk, voice.clone()).await?;
-        if first_audio.is_none() {
-            let t = t0.elapsed().as_secs_f32();
-            first_audio = Some(t);
-            eprintln!(
-                "First audio at {t:.2}s (load {:.2}s + synth {:.2}s)",
-                load.as_secs_f32(),
-                t - load.as_secs_f32()
-            );
-        }
-        if let Some(sink) = &sink {
-            sink.append(SamplesBuffer::new(1, SAMPLE_RATE, audio.clone()));
-        }
-        all_samples.extend(audio);
-    }
+    tts.tts_raw_audio_streaming(
+        &text,
+        lang_for(&args.voice),
+        &args.voice,
+        args.speed,
+        None,
+        None,
+        None,
+        None,
+        |audio| {
+            if first_audio.is_none() {
+                let t = t0.elapsed().as_secs_f32();
+                first_audio = Some(t);
+                eprintln!(
+                    "First audio at {t:.2}s (load {:.2}s + synth {:.2}s)",
+                    load.as_secs_f32(),
+                    t - load.as_secs_f32()
+                );
+            }
+            if let Some(sink) = &sink {
+                sink.append(SamplesBuffer::new(1, SAMPLE_RATE, audio.clone()));
+            }
+            all_samples.extend(audio);
+            Ok(())
+        },
+    )
+    .map_err(|e| anyhow::anyhow!("synthesis failed: {e}"))?;
 
     let total = t0.elapsed().as_secs_f32();
     let synth = total - load.as_secs_f32();

@@ -11,13 +11,22 @@ Default voice is `bm_george`, a mature British male.
 ```sh
 git clone https://github.com/andrewluetgers/vox.git
 cd vox
-cargo build --release
+cargo build --release   # needs cmake (brew install cmake) for espeak-ng
 cp target/release/vox ~/.local/bin/
+mkdir -p ~/Library/Caches/vox
+cp -r target/release/build/espeak-rs-sys-*/out/share/espeak-ng-data ~/Library/Caches/vox/
 vox --setup   # one-time model download (~350 MB) to ~/Library/Caches/vox
 ```
 
-The binary is ~34 MB and self-contained (ONNX Runtime statically linked,
-G2P built in). Model weights live outside the binary and download once.
+The binary is ~34 MB with ONNX Runtime and espeak-ng statically linked.
+Two data pieces live outside it: the model weights (downloaded once by
+`--setup`) and espeak-ng's phoneme data (~9 MB, copied from the build as
+above; vox finds it in its cache dir, or set
+`PIPER_ESPEAKNG_DATA_DIRECTORY`).
+
+Phonemization is espeak-ng — the same G2P Kokoro was trained with, so
+pronunciation matches the reference Python implementation, including
+proper British phonemes (`en-gb-x-rp`) for the `b*` voices.
 
 ## Usage
 
