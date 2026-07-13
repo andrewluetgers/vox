@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>vox</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, sans-serif;
+    margin: 0; padding: 16px;
+    display: flex; flex-direction: column; gap: 10px; height: 100vh; box-sizing: border-box;
+  }
+  textarea {
+    flex: 1; resize: none; font: inherit; padding: 8px;
+    border-radius: 8px; border: 1px solid rgba(128,128,128,.4);
+    background: transparent; color: inherit;
+  }
+  .row { display: flex; gap: 8px; align-items: center; }
+  button {
+    font: inherit; padding: 6px 14px; border-radius: 8px;
+    border: 1px solid rgba(128,128,128,.4); background: transparent; color: inherit; cursor: pointer;
+  }
+  button.primary { background: #4a7dfc; border-color: #4a7dfc; color: white; }
+  #state { margin-left: auto; opacity: .6; font-size: 12px; }
+</style>
+</head>
+<body>
+<textarea id="text" placeholder="Type or paste text, then Speak (⌘↩)"></textarea>
+<div class="row">
+  <button class="primary" id="speak">Speak</button>
+  <button id="stop">Stop</button>
+  <span id="state"></span>
+</div>
+<script>
+  const invoke = window.__TAURI__.core.invoke;
+  const $ = (id) => document.getElementById(id);
+  $('speak').onclick = () => invoke('speak', { text: $('text').value });
+  $('stop').onclick = () => invoke('stop');
+  document.addEventListener('keydown', (e) => {
+    if (e.metaKey && e.key === 'Enter') $('speak').click();
+    if (e.key === 'Escape') $('stop').click();
+  });
+  async function refresh() {
+    try {
+      const s = await invoke('status');
+      $('state').textContent =
+        `${s.enabled ? 'readouts on' : 'readouts off'} · ${s.voice} · ${s.speed}x${s.speaking ? ' · speaking' : ''}`;
+    } catch {}
+  }
+  refresh();
+  setInterval(refresh, 1500);
+</script>
+</body>
+</html>

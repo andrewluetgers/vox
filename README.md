@@ -117,6 +117,12 @@ and a `/vox` skill gives conversational control — "vox, repeat that",
 
 See [claude/README.md](claude/README.md) for how it works.
 
+## Menu-bar app (spike)
+
+[`tray/`](tray/) is a Tauri v2 menu-bar companion: tray controls for the
+readouts, a global ⌃⌥⌘V speak-the-clipboard shortcut, and a JSON socket at
+`~/.claude/vox/vox.sock`. See [tray/README.md](tray/README.md).
+
 ## Defaults via environment
 
 ```sh
