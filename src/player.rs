@@ -77,6 +77,11 @@ impl Player {
         self.set_pos(p);
     }
 
+    /// Jump to the end of generated audio (used to stop the current read).
+    pub fn jump_to_end(&self) {
+        self.set_pos(self.len() as f64);
+    }
+
     pub fn rate(&self) -> f32 {
         f32::from_bits(self.rate.load(Ordering::Relaxed))
     }

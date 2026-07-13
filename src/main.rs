@@ -1,6 +1,8 @@
 //! vox — speak text aloud with Kokoro TTS. Local, fast, streaming.
 
+mod config;
 mod player;
+mod tui;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
@@ -20,7 +22,7 @@ const RELEASE_BASE: &str =
 const MODEL_FILE: &str = "kokoro-v1.0.onnx";
 const VOICES_FILE: &str = "voices-v1.0.bin";
 
-const VOICE_NAMES: &[&str] = &[
+pub const VOICE_NAMES: &[&str] = &[
     // British male / female
     "bm_george", "bm_lewis", "bm_daniel", "bm_fable", "bf_emma", "bf_isabella",
     // American male / female
@@ -62,6 +64,9 @@ struct Args {
     /// Stop any vox currently speaking (from any terminal)
     #[arg(long)]
     stop: bool,
+    /// Open the persistent reader UI (also the default with no arguments)
+    #[arg(long)]
+    ui: bool,
 }
 
 /// Kill every other running vox process (used by --stop).
@@ -249,7 +254,7 @@ fn apply_lexicon(text: &str, lex: &[(String, String)]) -> String {
 
 /// espeak voice from the vox voice prefix: bm_/bf_ British, am_/af_ American.
 /// Note: this espeak-ng build has no bare "en-gb"; RP is the British voice.
-fn lang_for(voice: &str) -> &'static str {
+pub fn lang_for(voice: &str) -> &'static str {
     if voice.starts_with('b') {
         "en-gb-x-rp"
     } else {
@@ -370,7 +375,7 @@ fn chrono_stamp() -> String {
     format!("{now}")
 }
 
-fn save_wav(path: &Path, samples: &[f32]) -> Result<()> {
+pub fn save_wav(path: &Path, samples: &[f32]) -> Result<()> {
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: SAMPLE_RATE,
@@ -411,6 +416,17 @@ async fn main() -> Result<()> {
     if args.setup {
         eprintln!("Models ready in {}", cache_dir().display());
         return Ok(());
+    }
+
+    if args.ui
+        || (args.text.is_none() && args.file.is_none() && !args.clip && atty_stdin())
+    {
+        let tts = TTSKoko::new(
+            model_path.to_str().context("bad model path")?,
+            voices_path.to_str().context("bad voices path")?,
+        )
+        .await;
+        return tui::run(tts, config::Config::load()).await;
     }
 
     let text = apply_lexicon(&read_text(&args)?, &load_lexicon());

@@ -45,6 +45,25 @@ Voices: `bm_george`, `bm_lewis`, `bm_daniel`, `bm_fable`, `bf_emma`,
 `bf_isabella` (British); `am_adam`, `am_michael`, `af_heart`, `af_bella`,
 `af_nicole`, `af_sarah` (American).
 
+## Persistent reader UI
+
+Run `vox` with no arguments (or `vox --ui`) to open a persistent
+terminal UI, Claude-Code style: a scrolling transcript on top, a status
+line, and an input box at the bottom. Type text, press Enter, and it
+speaks — the submitted text appears dimmed and each word brightens to
+white as it's spoken, so the transcript doubles as a progress indicator.
+
+- **Enter** — speak the typed text (new submissions queue up)
+- **space** (input empty) — pause/resume · **←/→** (input empty) — skip,
+  hold to scrub · **↑/↓** — playback speed
+- **Esc** — stop the current read · **PgUp/PgDn** — scroll history
+- **Tab** — settings: voice, synthesis speed, audio folder, save on/off,
+  cleanup-on-exit (delete this session's files when you quit)
+- **Ctrl-C** — quit
+
+Settings persist in `~/.config/vox/config.toml`. Audio files are written
+to the configured folder (default `~/Music/vox`), one wav per utterance.
+
 ## Playback controls
 
 While vox is speaking in an interactive terminal:

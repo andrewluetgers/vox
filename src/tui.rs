@@ -1,0 +1,516 @@
+//! Persistent reader UI: scrolling karaoke transcript, status line, input box.
+//!
+//! Text you submit is queued for synthesis; the transcript shows it dimmed
+//! and brightens each word as the playback cursor passes it. Synthesis runs
+//! on a worker thread appending into the shared Player buffer; per-word
+//! timing is estimated by character weight within each synthesized sentence.
+
+use crate::config::Config;
+use crate::player::{Player, SAMPLE_RATE};
+use crate::{lang_for, save_wav, VOICE_NAMES};
+use anyhow::Result;
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use kokoros::tts::koko::TTSKoko;
+use ratatui::{
+    layout::{Constraint, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span, Text},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+};
+use rodio::{OutputStream, Sink};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
+
+const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+struct Word {
+    text: String,
+    /// sample index at which this word has been fully spoken
+    end: u64,
+}
+
+struct Utterance {
+    words: Vec<Word>,
+    start: u64,
+    end: u64,
+    done: bool,
+}
+
+#[derive(Default)]
+struct Shared {
+    utterances: Vec<Utterance>,
+    synthesizing: bool,
+    saved_files: Vec<std::path::PathBuf>,
+}
+
+struct Job {
+    text: String,
+    voice: String,
+    speed: f32,
+    save_dir: Option<std::path::PathBuf>,
+}
+
+/// Split text into sentences (bounded length) for incremental synthesis.
+fn sentences(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for ch in text.chars() {
+        cur.push(ch);
+        if matches!(ch, '.' | '!' | '?' | ';' | ':' | '\n') || cur.len() > 300 {
+            if !cur.trim().is_empty() {
+                out.push(cur.trim().to_string());
+            }
+            cur.clear();
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur.trim().to_string());
+    }
+    out
+}
+
+fn synth_worker(
+    tts: TTSKoko,
+    rx: mpsc::Receiver<Job>,
+    shared: Arc<Mutex<Shared>>,
+    player: Player,
+    cancel: Arc<AtomicBool>,
+) {
+    while let Ok(job) = rx.recv() {
+        cancel.store(false, Ordering::SeqCst);
+        let start = player.len() as u64;
+        {
+            let mut sh = shared.lock().unwrap();
+            sh.synthesizing = true;
+            sh.utterances.push(Utterance {
+                words: Vec::new(),
+                start,
+                end: start,
+                done: false,
+            });
+        }
+        for sentence in sentences(&job.text) {
+            if cancel.load(Ordering::SeqCst) {
+                break;
+            }
+            let audio = match tts.tts_raw_audio(
+                &sentence,
+                lang_for(&job.voice),
+                &job.voice,
+                job.speed,
+                None,
+                None,
+                None,
+                None,
+            ) {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            let sent_start = player.len() as u64;
+            player.append(&audio);
+            let sent_len = audio.len() as u64;
+
+            // estimate word boundaries by character weight within the sentence
+            let words: Vec<&str> = sentence.split_whitespace().collect();
+            let total_chars: usize = words.iter().map(|w| w.len() + 1).sum();
+            let mut acc = 0usize;
+            let mut sh = shared.lock().unwrap();
+            let utt = sh.utterances.last_mut().unwrap();
+            for w in &words {
+                acc += w.len() + 1;
+                let end = sent_start + sent_len * acc as u64 / total_chars.max(1) as u64;
+                utt.words.push(Word {
+                    text: w.to_string(),
+                    end,
+                });
+            }
+            utt.end = sent_start + sent_len;
+        }
+        let mut sh = shared.lock().unwrap();
+        sh.synthesizing = false;
+        if let Some(utt) = sh.utterances.last_mut() {
+            utt.done = true;
+            let (start, end) = (utt.start as usize, utt.end as usize);
+            if let Some(dir) = &job.save_dir {
+                if end > start {
+                    let _ = std::fs::create_dir_all(dir);
+                    let stamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
+                    let slug: String = job
+                        .text
+                        .to_lowercase()
+                        .chars()
+                        .take(32)
+                        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                        .collect();
+                    let path = dir.join(format!("{stamp}-{}.wav", slug.trim_matches('-')));
+                    let buf = player.buf.read().unwrap();
+                    if save_wav(&path, &buf[start..end.min(buf.len())]).is_ok() {
+                        sh.saved_files.push(path);
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub async fn run(tts: TTSKoko, mut cfg: Config) -> Result<()> {
+    let player = Player::new();
+    let (_stream, handle) = OutputStream::try_default()?;
+    let sink = Sink::try_new(&handle).map_err(|e| anyhow::anyhow!("audio: {e}"))?;
+    sink.append(player.source());
+
+    let shared = Arc::new(Mutex::new(Shared::default()));
+    let cancel = Arc::new(AtomicBool::new(false));
+    let (tx, rx) = mpsc::channel::<Job>();
+    {
+        let (tts, shared, player, cancel) =
+            (tts.clone(), shared.clone(), player.clone(), cancel.clone());
+        std::thread::spawn(move || synth_worker(tts, rx, shared, player, cancel));
+    }
+
+    let mut terminal = ratatui::init();
+    let res = ui_loop(
+        &mut terminal,
+        &sink,
+        &player,
+        &shared,
+        &cancel,
+        &tx,
+        &mut cfg,
+    );
+    ratatui::restore();
+    sink.stop();
+
+    let _ = cfg.save();
+    if cfg.cleanup_on_exit {
+        for f in &shared.lock().unwrap().saved_files {
+            let _ = std::fs::remove_file(f);
+        }
+        eprintln!("Cleaned up this session's audio files.");
+    } else {
+        let n = shared.lock().unwrap().saved_files.len();
+        if n > 0 {
+            eprintln!("{n} audio file(s) in {}", cfg.audio_dir);
+        }
+    }
+    res
+}
+
+struct UiState {
+    input: String,
+    scroll_up: u16,
+    settings_open: bool,
+    settings_sel: usize,
+    editing: Option<String>,
+    tick: usize,
+}
+
+fn ui_loop(
+    terminal: &mut ratatui::DefaultTerminal,
+    sink: &Sink,
+    player: &Player,
+    shared: &Arc<Mutex<Shared>>,
+    cancel: &Arc<AtomicBool>,
+    tx: &mpsc::Sender<Job>,
+    cfg: &mut Config,
+) -> Result<()> {
+    let mut st = UiState {
+        input: String::new(),
+        scroll_up: 0,
+        settings_open: false,
+        settings_sel: 0,
+        editing: None,
+        tick: 0,
+    };
+    // hold-to-scrub detection (same scheme as one-shot mode)
+    let mut last_arrow: Option<(KeyCode, Instant)> = None;
+    let mut scrub_deadline = Instant::now();
+
+    loop {
+        st.tick = st.tick.wrapping_add(1);
+        if player.scrubbing() != 0 && Instant::now() > scrub_deadline {
+            player.set_scrub(0);
+        }
+        terminal.draw(|f| draw(f, &st, sink, player, shared, cfg))?;
+
+        if !event::poll(Duration::from_millis(50))? {
+            continue;
+        }
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind == KeyEventKind::Release {
+            continue;
+        }
+
+        // global
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return Ok(());
+        }
+
+        if st.settings_open {
+            handle_settings_key(&mut st, key.code, cfg);
+            continue;
+        }
+
+        match key.code {
+            KeyCode::Tab => st.settings_open = true,
+            KeyCode::Enter => {
+                let text = st.input.trim().to_string();
+                if !text.is_empty() {
+                    tx.send(Job {
+                        text,
+                        voice: cfg.voice.clone(),
+                        speed: cfg.speed,
+                        save_dir: cfg.save_audio.then(|| cfg.audio_dir_path()),
+                    })
+                    .ok();
+                    st.input.clear();
+                    st.scroll_up = 0;
+                }
+            }
+            KeyCode::Backspace => {
+                st.input.pop();
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                st.input.clear();
+            }
+            KeyCode::Esc => {
+                // stop current speech and clear anything queued
+                cancel.store(true, Ordering::SeqCst);
+                player.jump_to_end();
+            }
+            KeyCode::Char(' ') if st.input.is_empty() => {
+                if sink.is_paused() {
+                    sink.play();
+                } else {
+                    sink.pause();
+                }
+            }
+            code @ (KeyCode::Left | KeyCode::Right) if st.input.is_empty() => {
+                let dir: i8 = if code == KeyCode::Left { -1 } else { 1 };
+                let now = Instant::now();
+                let holding = key.kind == KeyEventKind::Repeat
+                    || matches!(last_arrow, Some((c, t)) if c == code && now - t < Duration::from_millis(250));
+                if holding {
+                    player.set_scrub(dir);
+                    scrub_deadline = now + Duration::from_millis(300);
+                } else {
+                    let secs = if key.modifiers.contains(KeyModifiers::SHIFT) {
+                        30.0
+                    } else {
+                        15.0
+                    };
+                    player.skip(secs * dir as f32);
+                }
+                last_arrow = Some((code, now));
+            }
+            KeyCode::Up => {
+                player.adjust_rate(0.25);
+            }
+            KeyCode::Down => {
+                player.adjust_rate(-0.25);
+            }
+            KeyCode::PageUp => st.scroll_up = st.scroll_up.saturating_add(10),
+            KeyCode::PageDown => st.scroll_up = st.scroll_up.saturating_sub(10),
+            KeyCode::Char(ch) => st.input.push(ch),
+            _ => {}
+        }
+    }
+}
+
+const SETTINGS: &[&str] = &[
+    "voice",
+    "synthesis speed",
+    "audio folder",
+    "save audio",
+    "cleanup on exit",
+];
+
+fn handle_settings_key(st: &mut UiState, code: KeyCode, cfg: &mut Config) {
+    if let Some(buf) = &mut st.editing {
+        match code {
+            KeyCode::Enter => {
+                cfg.audio_dir = st.editing.take().unwrap();
+                let _ = cfg.save();
+            }
+            KeyCode::Esc => st.editing = None,
+            KeyCode::Backspace => {
+                buf.pop();
+            }
+            KeyCode::Char(ch) => buf.push(ch),
+            _ => {}
+        }
+        return;
+    }
+    match code {
+        KeyCode::Tab | KeyCode::Esc => {
+            st.settings_open = false;
+            let _ = cfg.save();
+        }
+        KeyCode::Up => st.settings_sel = st.settings_sel.saturating_sub(1),
+        KeyCode::Down => st.settings_sel = (st.settings_sel + 1).min(SETTINGS.len() - 1),
+        KeyCode::Left | KeyCode::Right | KeyCode::Enter => {
+            let fwd = code != KeyCode::Left;
+            match st.settings_sel {
+                0 => {
+                    let i = VOICE_NAMES
+                        .iter()
+                        .position(|v| *v == cfg.voice)
+                        .unwrap_or(0);
+                    let n = VOICE_NAMES.len();
+                    cfg.voice =
+                        VOICE_NAMES[if fwd { (i + 1) % n } else { (i + n - 1) % n }].to_string();
+                }
+                1 => {
+                    cfg.speed = (cfg.speed + if fwd { 0.1 } else { -0.1 }).clamp(0.5, 2.0);
+                    cfg.speed = (cfg.speed * 10.0).round() / 10.0;
+                }
+                2 => {
+                    if code == KeyCode::Enter {
+                        st.editing = Some(cfg.audio_dir.clone());
+                    }
+                }
+                3 => cfg.save_audio = !cfg.save_audio,
+                4 => cfg.cleanup_on_exit = !cfg.cleanup_on_exit,
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+fn fmt_time(samples: f64) -> String {
+    let s = samples / SAMPLE_RATE as f64;
+    format!("{}:{:02}", (s as u64) / 60, (s as u64) % 60)
+}
+
+fn draw(
+    f: &mut ratatui::Frame,
+    st: &UiState,
+    sink: &Sink,
+    player: &Player,
+    shared: &Arc<Mutex<Shared>>,
+    cfg: &Config,
+) {
+    let [text_area, status_area, input_area] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(1),
+        Constraint::Length(3),
+    ])
+    .areas(f.area());
+
+    let pos = player.pos() as u64;
+    let sh = shared.lock().unwrap();
+
+    // ---- transcript with karaoke highlighting ----
+    let mut lines: Vec<Line> = Vec::new();
+    for utt in &sh.utterances {
+        let mut spans: Vec<Span> = Vec::new();
+        let mut prev_end = utt.start;
+        for w in &utt.words {
+            let style = if pos >= w.end {
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else if pos >= prev_end {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            spans.push(Span::styled(format!("{} ", w.text), style));
+            prev_end = w.end;
+        }
+        lines.push(Line::from(spans));
+        lines.push(Line::default());
+    }
+    let para = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
+    let total = para.line_count(text_area.width) as u16;
+    let max_scroll = total.saturating_sub(text_area.height);
+    let scroll = max_scroll.saturating_sub(st.scroll_up.min(max_scroll));
+    f.render_widget(para.scroll((scroll, 0)), text_area);
+
+    // ---- status line ----
+    let len = player.len() as f64;
+    let state = if sh.synthesizing {
+        format!("{} synthesizing", SPINNER[st.tick % SPINNER.len()])
+    } else if sink.is_paused() {
+        "⏸ paused".into()
+    } else if (player.pos()) < len - 1.0 {
+        "▶ speaking".into()
+    } else {
+        "● idle".into()
+    };
+    let status = Line::from(vec![
+        Span::styled(
+            format!(" {state} "),
+            Style::default().fg(Color::Black).bg(Color::Cyan),
+        ),
+        Span::raw(format!(
+            " {} / {}  {:.2}x  {}  ",
+            fmt_time(player.pos()),
+            fmt_time(len),
+            player.rate(),
+            cfg.voice
+        )),
+        Span::styled(
+            "tab settings · esc stop · space pause · ←/→ skip · ↑/↓ speed · ^C quit",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]);
+    f.render_widget(Paragraph::new(status), status_area);
+
+    // ---- input box ----
+    let input = Paragraph::new(format!("{}▌", st.input))
+        .block(Block::default().borders(Borders::ALL).title(" vox "));
+    f.render_widget(input, input_area);
+
+    // ---- settings popup ----
+    if st.settings_open {
+        let w = 52.min(f.area().width.saturating_sub(4));
+        let h = (SETTINGS.len() as u16 + 4).min(f.area().height.saturating_sub(2));
+        let area = Rect::new(
+            (f.area().width - w) / 2,
+            (f.area().height.saturating_sub(h)) / 3,
+            w,
+            h,
+        );
+        f.render_widget(Clear, area);
+        let values = [
+            cfg.voice.clone(),
+            format!("{:.1}x", cfg.speed),
+            match &st.editing {
+                Some(buf) => format!("{buf}▌"),
+                None => cfg.audio_dir.clone(),
+            },
+            if cfg.save_audio { "on" } else { "off" }.into(),
+            if cfg.cleanup_on_exit { "on" } else { "off" }.into(),
+        ];
+        let mut lines: Vec<Line> = Vec::new();
+        for (i, (name, value)) in SETTINGS.iter().zip(values.iter()).enumerate() {
+            let sel = i == st.settings_sel;
+            let style = if sel {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else {
+                Style::default()
+            };
+            lines.push(Line::styled(format!(" {name:<18} {value}"), style));
+        }
+        lines.push(Line::default());
+        lines.push(Line::styled(
+            " ←/→ change · enter edit/toggle · tab close",
+            Style::default().fg(Color::DarkGray),
+        ));
+        f.render_widget(
+            Paragraph::new(Text::from(lines))
+                .block(Block::default().borders(Borders::ALL).title(" settings ")),
+            area,
+        );
+    }
+}
