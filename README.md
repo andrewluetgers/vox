@@ -50,7 +50,14 @@ Voices: `bm_george`, `bm_lewis`, `bm_daniel`, `bm_fable`, `bf_emma`,
 While vox is speaking in an interactive terminal:
 
 - **space** — pause / resume
+- **← / →** — skip back / forward 15 s (**Shift** for 30 s)
+- **hold ← / →** — scrub backward / forward at 3× (release to resume normal playback)
+- **↑ / ↓** — playback speed ±0.25× (0.25–3×, tape-style: pitch follows rate)
 - **q** or **Esc** or **Ctrl-C** — cancel
+
+Skipping ahead of what's been synthesized waits in silence until synthesis
+catches up. Playback speed (↑/↓, applied live) is independent of synthesis
+speed (`-s`, baked into the voice).
 
 From anywhere else (another terminal, a script, a hotkey):
 

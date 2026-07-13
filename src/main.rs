@@ -1,9 +1,12 @@
 //! vox — speak text aloud with Kokoro TTS. Local, fast, streaming.
 
+mod player;
+
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use kokoros::tts::koko::TTSKoko;
-use rodio::{buffer::SamplesBuffer, OutputStream, Sink};
+use player::SAMPLE_RATE;
+use rodio::{OutputStream, Sink};
 use std::{
     fs,
     io::{Read, Write},
@@ -11,8 +14,6 @@ use std::{
     process::Command,
     time::Instant,
 };
-
-const SAMPLE_RATE: u32 = 24000;
 const RELEASE_BASE: &str =
     "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0";
 // fp32 over int8: ~2x faster on Apple Silicon CPUs despite the bigger download
@@ -81,45 +82,115 @@ fn stop_others() -> Result<()> {
     Ok(())
 }
 
-/// While speaking interactively: space pauses/resumes, q / Esc / Ctrl-C cancels.
+fn fmt_time(samples: f64) -> String {
+    let s = samples / player::SAMPLE_RATE as f64;
+    format!("{}:{:02}", (s as u64) / 60, (s as u64) % 60)
+}
+
+fn status(player: &player::Player, msg: &str) {
+    // raw mode: rewrite a single status line in place
+    eprint!(
+        "\r\x1b[K{msg}  [{} / {}]",
+        fmt_time(player.pos()),
+        fmt_time(player.len() as f64)
+    );
+}
+
+/// While speaking interactively:
+///   space          pause / resume
+///   left / right   skip 15s (shift: 30s); hold to scrub at 3x (reverse plays backward)
+///   up / down      playback speed +/- 0.25x
+///   q / Esc / ^C   cancel
 fn spawn_key_listener(
     sink: std::sync::Arc<Sink>,
+    player: player::Player,
     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
-    use crossterm::event::{poll, read, Event, KeyCode, KeyModifiers};
+    use crossterm::event::{poll, read, Event, KeyCode, KeyEventKind, KeyModifiers};
     use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    // Terminal key auto-repeat: a held arrow arrives as rapid repeated events
+    // (crossterm reports them as Press on most terminals, Repeat on some).
+    // Two same-arrow events inside HOLD_WINDOW = holding -> scrub; when events
+    // stop for SCRUB_TIMEOUT the hold has ended -> back to normal playback.
+    const HOLD_WINDOW: Duration = Duration::from_millis(250);
+    const SCRUB_TIMEOUT: Duration = Duration::from_millis(300);
+
     std::thread::spawn(move || {
         let _ = crossterm::terminal::enable_raw_mode();
+        let mut last_arrow: Option<(KeyCode, Instant)> = None;
+        let mut scrub_deadline = Instant::now();
         loop {
             if cancelled.load(Ordering::SeqCst) {
                 break;
             }
-            if poll(std::time::Duration::from_millis(100)).unwrap_or(false) {
-                if let Ok(Event::Key(key)) = read() {
-                    match key.code {
-                        KeyCode::Char(' ') => {
-                            if sink.is_paused() {
-                                sink.play();
-                            } else {
-                                sink.pause();
-                            }
-                        }
-                        KeyCode::Char('q') | KeyCode::Esc => {
-                            cancelled.store(true, Ordering::SeqCst);
-                            sink.stop();
-                            break;
-                        }
-                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            cancelled.store(true, Ordering::SeqCst);
-                            sink.stop();
-                            break;
-                        }
-                        _ => {}
+            if player.scrubbing() != 0 && Instant::now() > scrub_deadline {
+                player.set_scrub(0);
+                status(&player, &format!("▶ {}x", player.rate()));
+            }
+            if !poll(Duration::from_millis(50)).unwrap_or(false) {
+                continue;
+            }
+            let Ok(Event::Key(key)) = read() else {
+                continue;
+            };
+            if key.kind == KeyEventKind::Release {
+                continue;
+            }
+            match key.code {
+                KeyCode::Char(' ') => {
+                    if sink.is_paused() {
+                        sink.play();
+                        status(&player, "▶ resumed");
+                    } else {
+                        sink.pause();
+                        status(&player, "⏸ paused");
                     }
                 }
+                code @ (KeyCode::Left | KeyCode::Right) => {
+                    let dir: i8 = if code == KeyCode::Left { -1 } else { 1 };
+                    let now = Instant::now();
+                    let holding = key.kind == KeyEventKind::Repeat
+                        || matches!(last_arrow, Some((c, t)) if c == code && now - t < HOLD_WINDOW);
+                    if holding {
+                        player.set_scrub(dir);
+                        scrub_deadline = now + SCRUB_TIMEOUT;
+                        status(&player, if dir > 0 { "⏩ 3x" } else { "⏪ 3x" });
+                    } else {
+                        let secs = if key.modifiers.contains(KeyModifiers::SHIFT) {
+                            30.0
+                        } else {
+                            15.0
+                        };
+                        player.skip(secs * dir as f32);
+                        status(
+                            &player,
+                            &format!("{} {}s", if dir > 0 { "→" } else { "←" }, secs as i32),
+                        );
+                    }
+                    last_arrow = Some((code, now));
+                }
+                code @ (KeyCode::Up | KeyCode::Down) => {
+                    let delta = if code == KeyCode::Up { 0.25 } else { -0.25 };
+                    let r = player.adjust_rate(delta);
+                    status(&player, &format!("▶ {r}x"));
+                }
+                KeyCode::Char('q') | KeyCode::Esc => {
+                    cancelled.store(true, Ordering::SeqCst);
+                    sink.stop();
+                    break;
+                }
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    cancelled.store(true, Ordering::SeqCst);
+                    sink.stop();
+                    break;
+                }
+                _ => {}
             }
         }
         let _ = crossterm::terminal::disable_raw_mode();
+        eprintln!();
     });
 }
 
@@ -358,23 +429,27 @@ async fn main() -> Result<()> {
 
     use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
 
+    let play = player::Player::new();
+
     let (_stream, sink) = if args.no_play {
         (None, None)
     } else {
         let (stream, handle) = OutputStream::try_default().context("no audio output device")?;
         let sink = Arc::new(Sink::try_new(&handle)?);
+        sink.append(play.source());
         (Some(stream), Some(sink))
     };
 
     let cancelled = Arc::new(AtomicBool::new(false));
     if let Some(sink) = &sink {
         if atty_stdin() {
-            eprintln!("[space] pause/resume · [q] cancel");
-            spawn_key_listener(sink.clone(), cancelled.clone());
+            eprintln!(
+                "[space] pause · [←/→] 15s, shift 30s, hold = scrub 3x · [↑/↓] speed · [q/esc] cancel"
+            );
+            spawn_key_listener(sink.clone(), play.clone(), cancelled.clone());
         }
     }
 
-    let mut all_samples: Vec<f32> = Vec::new();
     let mut first_audio: Option<f32> = None;
     let synth_result = tts.tts_raw_audio_streaming(
         &text,
@@ -398,13 +473,11 @@ async fn main() -> Result<()> {
                     t - load.as_secs_f32()
                 );
             }
-            if let Some(sink) = &sink {
-                sink.append(SamplesBuffer::new(1, SAMPLE_RATE, audio.clone()));
-            }
-            all_samples.extend(audio);
+            play.append(&audio);
             Ok(())
         },
     );
+    play.synth_done.store(true, Ordering::SeqCst);
     if let Err(e) = synth_result {
         if !cancelled.load(Ordering::SeqCst) {
             let _ = crossterm::terminal::disable_raw_mode();
@@ -414,7 +487,7 @@ async fn main() -> Result<()> {
 
     let total = t0.elapsed().as_secs_f32();
     let synth = total - load.as_secs_f32();
-    let audio_secs = all_samples.len() as f32 / SAMPLE_RATE as f32;
+    let audio_secs = play.len() as f32 / SAMPLE_RATE as f32;
     eprintln!(
         "Synthesized {audio_secs:.1}s of audio in {synth:.1}s ({:.1}x faster than realtime)",
         audio_secs / synth.max(0.001)
@@ -422,7 +495,7 @@ async fn main() -> Result<()> {
 
     if !args.no_save {
         let out = out_path(&args, &text)?;
-        save_wav(&out, &all_samples)?;
+        save_wav(&out, &play.buf.read().unwrap())?;
         eprintln!("Saved {}", out.display());
     }
 
