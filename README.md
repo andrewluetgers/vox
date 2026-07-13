@@ -55,9 +55,9 @@ While vox is speaking in an interactive terminal:
 - **↑ / ↓** — playback speed ±0.25× (0.25–3×, tape-style: pitch follows rate)
 - **q** or **Esc** or **Ctrl-C** — cancel
 
-Skipping ahead of what's been synthesized waits in silence until synthesis
-catches up. Playback speed (↑/↓, applied live) is independent of synthesis
-speed (`-s`, baked into the voice).
+Skips and scrubs are capped at the edge of what's been synthesized — you
+can't jump ahead of generation. Playback speed (↑/↓, applied live) is
+independent of synthesis speed (`-s`, baked into the voice).
 
 From anywhere else (another terminal, a script, a hotkey):
 

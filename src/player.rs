@@ -16,6 +16,8 @@ use std::time::Duration;
 
 pub const SAMPLE_RATE: u32 = 24000;
 pub const SCRUB_RATE: f32 = 3.0;
+/// keep skips/scrubs this far behind live synthesis (samples)
+const FRONTIER_MARGIN: f64 = SAMPLE_RATE as f64 / 2.0;
 
 #[derive(Clone)]
 pub struct Player {
@@ -57,10 +59,21 @@ impl Player {
         self.pos.store(p.to_bits(), Ordering::Relaxed);
     }
 
-    /// Move the cursor by `secs` (negative = back), clamped to the buffer.
-    pub fn skip(&self, secs: f32) {
+    /// How far forward the cursor may go: the end once synthesis is done,
+    /// otherwise just behind the synthesis frontier so skips never land in
+    /// silence that hasn't been generated yet.
+    fn max_pos(&self) -> f64 {
         let len = self.len() as f64;
-        let p = (self.pos() + secs as f64 * SAMPLE_RATE as f64).clamp(0.0, len);
+        if self.synth_done.load(Ordering::Relaxed) {
+            len
+        } else {
+            (len - FRONTIER_MARGIN).max(0.0)
+        }
+    }
+
+    /// Move the cursor by `secs` (negative = back), clamped to generated audio.
+    pub fn skip(&self, secs: f32) {
+        let p = (self.pos() + secs as f64 * SAMPLE_RATE as f64).clamp(0.0, self.max_pos());
         self.set_pos(p);
     }
 
@@ -114,11 +127,16 @@ impl Iterator for CursorSource {
             pos = 0.0;
             p.set_scrub(0);
         }
+        if scrub > 0 && pos >= p.max_pos() {
+            // scrubbing caught up with synthesis: drop back to normal playback
+            p.set_scrub(0);
+            pos = p.max_pos();
+        }
         if pos >= len {
             if p.synth_done.load(Ordering::Relaxed) {
-                return None; // played (or scrubbed) past the end of finished audio
+                return None; // played past the end of finished audio
             }
-            // ahead of synthesis: hold and emit silence until more arrives
+            // playback caught up with synthesis: hold until more arrives
             p.set_pos(len);
             return Some(0.0);
         }
