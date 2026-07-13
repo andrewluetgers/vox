@@ -58,6 +58,69 @@ struct Args {
     /// Download model files (~350 MB) and exit
     #[arg(long)]
     setup: bool,
+    /// Stop any vox currently speaking (from any terminal)
+    #[arg(long)]
+    stop: bool,
+}
+
+/// Kill every other running vox process (used by --stop).
+fn stop_others() -> Result<()> {
+    let me = std::process::id().to_string();
+    let out = Command::new("pgrep").args(["-x", "vox"]).output()?;
+    let mut killed = 0;
+    for pid in String::from_utf8_lossy(&out.stdout).split_whitespace() {
+        if pid != me {
+            Command::new("kill").arg(pid).status()?;
+            killed += 1;
+        }
+    }
+    eprintln!(
+        "{}",
+        if killed > 0 { "Stopped." } else { "Nothing was speaking." }
+    );
+    Ok(())
+}
+
+/// While speaking interactively: space pauses/resumes, q / Esc / Ctrl-C cancels.
+fn spawn_key_listener(
+    sink: std::sync::Arc<Sink>,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    use crossterm::event::{poll, read, Event, KeyCode, KeyModifiers};
+    use std::sync::atomic::Ordering;
+    std::thread::spawn(move || {
+        let _ = crossterm::terminal::enable_raw_mode();
+        loop {
+            if cancelled.load(Ordering::SeqCst) {
+                break;
+            }
+            if poll(std::time::Duration::from_millis(100)).unwrap_or(false) {
+                if let Ok(Event::Key(key)) = read() {
+                    match key.code {
+                        KeyCode::Char(' ') => {
+                            if sink.is_paused() {
+                                sink.play();
+                            } else {
+                                sink.pause();
+                            }
+                        }
+                        KeyCode::Char('q') | KeyCode::Esc => {
+                            cancelled.store(true, Ordering::SeqCst);
+                            sink.stop();
+                            break;
+                        }
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            cancelled.store(true, Ordering::SeqCst);
+                            sink.stop();
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let _ = crossterm::terminal::disable_raw_mode();
+    });
 }
 
 /// Pronunciation fixes: lines of `word = respelling` in ~/.config/vox/lexicon.txt
@@ -261,6 +324,9 @@ async fn main() -> Result<()> {
         }
         return Ok(());
     }
+    if args.stop {
+        return stop_others();
+    }
 
     // espeak-ng looks for its data via this env var (then cwd / exe dir);
     // we keep espeak-ng-data in the vox cache dir, installed by --setup docs.
@@ -290,17 +356,27 @@ async fn main() -> Result<()> {
     let load = t0.elapsed();
     eprintln!("Model loaded in {:.2}s", load.as_secs_f32());
 
+    use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
+
     let (_stream, sink) = if args.no_play {
         (None, None)
     } else {
         let (stream, handle) = OutputStream::try_default().context("no audio output device")?;
-        let sink = Sink::try_new(&handle)?;
+        let sink = Arc::new(Sink::try_new(&handle)?);
         (Some(stream), Some(sink))
     };
 
+    let cancelled = Arc::new(AtomicBool::new(false));
+    if let Some(sink) = &sink {
+        if atty_stdin() {
+            eprintln!("[space] pause/resume · [q] cancel");
+            spawn_key_listener(sink.clone(), cancelled.clone());
+        }
+    }
+
     let mut all_samples: Vec<f32> = Vec::new();
     let mut first_audio: Option<f32> = None;
-    tts.tts_raw_audio_streaming(
+    let synth_result = tts.tts_raw_audio_streaming(
         &text,
         lang_for(&args.voice),
         &args.voice,
@@ -310,6 +386,9 @@ async fn main() -> Result<()> {
         None,
         None,
         |audio| {
+            if cancelled.load(Ordering::SeqCst) {
+                return Err("cancelled".into());
+            }
             if first_audio.is_none() {
                 let t = t0.elapsed().as_secs_f32();
                 first_audio = Some(t);
@@ -325,8 +404,13 @@ async fn main() -> Result<()> {
             all_samples.extend(audio);
             Ok(())
         },
-    )
-    .map_err(|e| anyhow::anyhow!("synthesis failed: {e}"))?;
+    );
+    if let Err(e) = synth_result {
+        if !cancelled.load(Ordering::SeqCst) {
+            let _ = crossterm::terminal::disable_raw_mode();
+            bail!("synthesis failed: {e}");
+        }
+    }
 
     let total = t0.elapsed().as_secs_f32();
     let synth = total - load.as_secs_f32();
@@ -345,5 +429,7 @@ async fn main() -> Result<()> {
     if let Some(sink) = &sink {
         sink.sleep_until_end();
     }
+    cancelled.store(true, Ordering::SeqCst); // ends the key listener
+    let _ = crossterm::terminal::disable_raw_mode();
     Ok(())
 }

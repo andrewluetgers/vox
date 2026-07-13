@@ -45,6 +45,19 @@ Voices: `bm_george`, `bm_lewis`, `bm_daniel`, `bm_fable`, `bf_emma`,
 `bf_isabella` (British); `am_adam`, `am_michael`, `af_heart`, `af_bella`,
 `af_nicole`, `af_sarah` (American).
 
+## Playback controls
+
+While vox is speaking in an interactive terminal:
+
+- **space** — pause / resume
+- **q** or **Esc** or **Ctrl-C** — cancel
+
+From anywhere else (another terminal, a script, a hotkey):
+
+```sh
+vox --stop    # silences any running vox
+```
+
 ## Pronunciation fixes
 
 The G2P is dictionary-based, so unusual words, names, and jargon can come

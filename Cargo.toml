@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
+crossterm = "0.28"
 dirs = "5"
 hound = "3.5"
 kokoros = { git = "https://github.com/lucasjinreal/Kokoros" }
