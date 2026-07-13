@@ -218,10 +218,14 @@ struct UiState {
     settings_sel: usize,
     editing: Option<String>,
     tick: usize,
-    /// recent-history picker (Ctrl-P): last 10 from the shared history
+    /// recent-history picker (Ctrl-P): last 10 from the shared history,
+    /// ←/→ cycles a source filter (all, claude, tui, …)
     hist_open: bool,
     hist_sel: usize,
     hist_items: Vec<(String, String)>,
+    hist_all: Vec<(String, String)>,
+    hist_filters: Vec<String>,
+    hist_filter: usize,
     /// last text spoken this session (falls back to shared last-spoken.txt)
     last_text: Option<String>,
 }
@@ -246,6 +250,9 @@ fn ui_loop(
         hist_open: false,
         hist_sel: 0,
         hist_items: Vec::new(),
+        hist_all: Vec::new(),
+        hist_filters: Vec::new(),
+        hist_filter: 0,
         last_text: crate::config::last_spoken(),
     };
     // hold-to-scrub detection (same scheme as one-shot mode)
@@ -309,6 +316,17 @@ fn ui_loop(
                 KeyCode::Down => {
                     st.hist_sel = (st.hist_sel + 1).min(st.hist_items.len().saturating_sub(1))
                 }
+                code @ (KeyCode::Left | KeyCode::Right) => {
+                    let n = st.hist_filters.len();
+                    if n > 0 {
+                        st.hist_filter = if code == KeyCode::Right {
+                            (st.hist_filter + 1) % n
+                        } else {
+                            (st.hist_filter + n - 1) % n
+                        };
+                        apply_hist_filter(&mut st);
+                    }
+                }
                 KeyCode::Enter => {
                     if let Some((_, text)) = st.hist_items.get(st.hist_sel) {
                         st.last_text = Some(text.clone());
@@ -365,9 +383,17 @@ fn ui_loop(
                 }
             }
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                st.hist_items = crate::config::recent_history(10);
-                st.hist_sel = 0;
-                st.hist_open = !st.hist_items.is_empty();
+                st.hist_all = crate::config::recent_history(200);
+                let mut filters = vec!["all".to_string()];
+                for (source, _) in &st.hist_all {
+                    if !filters.contains(source) {
+                        filters.push(source.clone());
+                    }
+                }
+                st.hist_filters = filters;
+                st.hist_filter = 0;
+                apply_hist_filter(&mut st);
+                st.hist_open = !st.hist_all.is_empty();
             }
             KeyCode::Backspace => {
                 // backspace on an empty input removes the last paste chip
@@ -482,6 +508,19 @@ fn handle_settings_key(st: &mut UiState, code: KeyCode, cfg: &mut Config) {
         }
         _ => {}
     }
+}
+
+/// Recompute the visible picker items for the current source filter.
+fn apply_hist_filter(st: &mut UiState) {
+    let filter = st.hist_filters.get(st.hist_filter).cloned().unwrap_or_default();
+    st.hist_items = st
+        .hist_all
+        .iter()
+        .filter(|(source, _)| filter == "all" || *source == filter)
+        .take(10)
+        .cloned()
+        .collect();
+    st.hist_sel = 0;
 }
 
 fn fmt_time(samples: f64) -> String {
@@ -607,12 +646,18 @@ fn draw(
         }
         lines.push(Line::default());
         lines.push(Line::styled(
-            " ↑/↓ select · enter speak · esc close",
+            " ↑/↓ select · ←/→ source filter · enter speak · esc close",
             Style::default().fg(Color::DarkGray),
         ));
+        let filter = st.hist_filters.get(st.hist_filter).cloned().unwrap_or_default();
+        let title = if filter == "all" || filter.is_empty() {
+            " recent ".to_string()
+        } else {
+            format!(" recent · {filter} ")
+        };
         f.render_widget(
             Paragraph::new(Text::from(lines))
-                .block(Block::default().borders(Borders::ALL).title(" recent ")),
+                .block(Block::default().borders(Borders::ALL).title(title)),
             area,
         );
     }

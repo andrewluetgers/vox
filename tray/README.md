@@ -10,8 +10,12 @@ other processes can speak through one place.
 - **Tray menu**: toggle "Speak Claude replies" (flips `enabled` in
   state.json, so it mutes the Claude Stop hook), stop speaking, **Repeat
   last**, a **Recent** submenu of the last 10 spoken items (click to
-  replay; refreshes as the hook/TUI/panel speak), speak clipboard, speed
-  presets, panel window, quit. Parity twin: the TUI's Ctrl-R / Ctrl-P.
+  replay; refreshes as the hook/TUI/panel speak), speak clipboard, a
+  **Voice** submenu (current voice check-marked, header names the model
+  the voices come from, picking one speaks a sample; "More voice
+  settings…" deep-links the panel to Settings — the future home of other
+  providers), speed presets, panel window, quit. Parity twins: the TUI's
+  Ctrl-R / Ctrl-P and its Tab-settings voice picker.
 - **Panel window** (Open vox… in the tray): three tabs —
   - **Speak**: text box (⌘↩ speaks, Esc stops), speak-clipboard button.
   - **History**: the last 100 readouts from every source (Claude hook,

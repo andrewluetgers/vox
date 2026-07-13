@@ -108,8 +108,9 @@
 
 <section class="tab" id="tab-history">
   <div class="row" style="margin-top:0">
-    <span class="hint">Newest first. Click text to expand. Retention is set in
-      Settings → Text history.</span>
+    <select id="h-source"><option value="">All sources</option></select>
+    <select id="h-project" style="display:none"><option value="">All repos</option></select>
+    <span class="hint">Newest first. Click text to expand.</span>
     <span style="flex:1"></span>
     <button class="btn" id="clearhist">Clear history</button>
   </div>
@@ -239,15 +240,20 @@
   let projects = [];       // registry from list_projects
   let scope = '';          // '' = global, else repo path
 
-  // --- tabs ---
-  $$('nav button[data-tab]').forEach(b => b.onclick = () => {
+  // --- tabs (clicks, plus location.hash so the tray can deep-link) ---
+  function showTab(name) {
+    const btn = $(`nav button[data-tab="${name}"]`);
+    if (!btn) return;
     $$('nav button').forEach(x => x.classList.remove('active'));
     $$('section.tab').forEach(x => x.classList.remove('active'));
-    b.classList.add('active');
-    $('#tab-' + b.dataset.tab).classList.add('active');
-    if (b.dataset.tab === 'history') loadHistory();
-    if (b.dataset.tab === 'settings') loadSettings();
-  });
+    btn.classList.add('active');
+    $('#tab-' + name).classList.add('active');
+    if (name === 'history') loadHistory();
+    if (name === 'settings') loadSettings();
+  }
+  $$('nav button[data-tab]').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+  window.addEventListener('hashchange', () => showTab(location.hash.slice(1)));
+  if (location.hash) showTab(location.hash.slice(1));
 
   // --- speak tab ---
   $('#speakbtn').onclick = () => invoke('speak', { text: $('#text').value });
@@ -277,8 +283,29 @@
     if (d < 86400) return `${d/3600|0}h ago`;
     return new Date(ts*1000).toLocaleDateString();
   }
+  let histAll = [];
+  function fillFilter(sel, values) {
+    const prev = sel.value;
+    while (sel.options.length > 1) sel.remove(1);
+    for (const v of values) {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = v;
+      sel.append(o);
+    }
+    if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+  }
   async function loadHistory() {
-    const list = await invoke('get_history');
+    histAll = await invoke('get_history');
+    fillFilter($('#h-source'), [...new Set(histAll.map(e => e.source || '?'))]);
+    const projects = [...new Set(histAll.filter(e => e.project).map(e => e.project))];
+    fillFilter($('#h-project'), projects);
+    $('#h-project').style.display = projects.length ? '' : 'none';
+    renderHistory();
+  }
+  function renderHistory() {
+    const src = $('#h-source').value, proj = $('#h-project').value;
+    const list = histAll.filter(e =>
+      (!src || (e.source || '?') === src) && (!proj || e.project === proj));
     $('#histlist').innerHTML = '';
     for (const e of list) {
       const div = document.createElement('div');
@@ -293,8 +320,10 @@
       div.append(meta, text, btn);
       $('#histlist').append(div);
     }
-    if (!list.length) $('#histlist').innerHTML = '<p class="hint">Nothing spoken yet.</p>';
+    if (!list.length) $('#histlist').innerHTML = '<p class="hint">Nothing spoken yet (with these filters).</p>';
   }
+  $('#h-source').onchange = renderHistory;
+  $('#h-project').onchange = renderHistory;
   $('#clearhist').onclick = async () => { await invoke('clear_history'); loadHistory(); };
 
   // --- settings: scope handling ---

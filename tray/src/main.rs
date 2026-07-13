@@ -598,6 +598,31 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let recent_menu = recent_menu.build()?;
     *RECENT.lock().unwrap() = recent;
 
+    // Voice submenu: quick global voice pick, labeled with the model the
+    // voices come from. "More…" deep-links to the panel's Settings tab —
+    // the future home of other providers/models.
+    let current_voice = effective_state()["voice"].as_str().unwrap_or("bm_george").to_string();
+    let mut voice_menu = SubmenuBuilder::new(app, "Voice");
+    voice_menu = voice_menu.item(
+        &MenuItemBuilder::with_id("voice-header", "Kokoro-82M · local")
+            .enabled(false)
+            .build(app)?,
+    );
+    for v in VOICES {
+        voice_menu = voice_menu.item(&CheckMenuItem::with_id(
+            app,
+            format!("voice-{v}"),
+            *v,
+            true,
+            *v == current_voice,
+            None::<&str>,
+        )?);
+    }
+    let voice_menu = voice_menu
+        .separator()
+        .item(&MenuItemBuilder::with_id("voice-more", "More voice settings…").build(app)?)
+        .build()?;
+
     let mut speed_menu = SubmenuBuilder::new(app, "Speed");
     for s in ["0.8", "1.0", "1.1", "1.25", "1.5", "2.0"] {
         speed_menu = speed_menu
@@ -612,6 +637,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .item(&repeat_item)
         .item(&recent_menu)
         .item(&clip_item)
+        .item(&voice_menu)
         .item(&speed_menu)
         .separator()
         .item(&panel_item)
@@ -643,12 +669,26 @@ fn start_menu_refresher(app: AppHandle) {
 }
 
 fn open_panel(app: &AppHandle) {
+    open_panel_tab(app, "");
+}
+
+/// Open the panel, optionally jumping to a tab ("settings", "history").
+/// The page reads location.hash on load and on hashchange.
+fn open_panel_tab(app: &AppHandle, tab: &str) {
     if let Some(w) = app.get_webview_window("panel") {
+        if !tab.is_empty() {
+            let _ = w.eval(&format!("location.hash = '{tab}'"));
+        }
         let _ = w.show();
         let _ = w.set_focus();
         return;
     }
-    let _ = tauri::WebviewWindowBuilder::new(app, "panel", tauri::WebviewUrl::App("index.html".into()))
+    let url = if tab.is_empty() {
+        "index.html".to_string()
+    } else {
+        format!("index.html#{tab}")
+    };
+    let _ = tauri::WebviewWindowBuilder::new(app, "panel", tauri::WebviewUrl::App(url.into()))
         .title("vox")
         .inner_size(560.0, 520.0)
         .build();
@@ -723,7 +763,7 @@ fn get_history() -> Value {
         .filter_map(|l| serde_json::from_str(l).ok())
         .collect();
     entries.reverse();
-    entries.truncate(100);
+    entries.truncate(500);
     json!(entries)
 }
 
@@ -913,6 +953,14 @@ fn main() {
                     "clipboard" => speak_clipboard(),
                     "repeat" => replay_last(),
                     "panel" => open_panel(app),
+                    "voice-more" => open_panel_tab(app, "settings"),
+                    id if id.starts_with("voice-") => {
+                        let v = &id["voice-".len()..];
+                        if VOICES.contains(&v) {
+                            apply_patch(&json!({"voice": v}));
+                            preview_voice(v.to_string());
+                        }
+                    }
                     id if id.starts_with("hist-") => {
                         if let Ok(i) = id["hist-".len()..].parse::<usize>() {
                             let text = RECENT.lock().unwrap().get(i).cloned();

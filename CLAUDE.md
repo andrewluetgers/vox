@@ -24,8 +24,14 @@ force it — flag the asymmetry to the user and discuss instead.
 
 Current equivalences: repeat-last (tray menu "Repeat last" ↔ TUI Ctrl-R),
 recent history (tray "Recent" submenu ↔ TUI Ctrl-P picker, both last 10
-from shared history.jsonl), settings (tray Settings tab ↔ TUI Tab popup),
+from shared history.jsonl), history source filter (panel History dropdowns
+↔ TUI picker ←/→ cycle), voice quick-pick (tray "Voice" submenu ↔ TUI
+Tab-settings voice field), settings (tray Settings tab ↔ TUI Tab popup),
 stop/pause/speed transport in both.
+
+Known accepted asymmetry: per-repo history filtering is panel-only (a
+second filter axis in the small TUI popup was judged clutter — revisit if
+asked).
 
 ## Conventions
 
