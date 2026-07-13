@@ -104,6 +104,19 @@ qwen = kwen
 nginx = engine-ex
 ```
 
+## Claude Code integration
+
+The [`claude/`](claude/) directory makes Claude Code talk to you: a Stop
+hook speaks a Haiku-condensed summary of each Claude response through vox,
+and a `/vox` skill gives conversational control — "vox, repeat that",
+"read me the whole thing", "vox slower", "vox off". Install with:
+
+```sh
+./claude/install.sh
+```
+
+See [claude/README.md](claude/README.md) for how it works.
+
 ## Defaults via environment
 
 ```sh
