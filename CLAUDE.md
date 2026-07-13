@@ -47,3 +47,12 @@ asked).
 - Text spoken by any surface should be logged to the shared history
   (respecting `save_history`) and update last-spoken.txt.
 - `vox --stop` kills all vox processes — it's the universal silencer.
+- Installing a locally built binary: `rm` the old one first, then `cp`
+  (`cp` over an existing signed binary invalidates the signature and macOS
+  SIGKILLs it — "zsh: killed", exit 137).
+- Run `cargo test` before committing: unit tests live next to the code
+  (config history/overrides, TUI history filter) and `tests/md2speech.rs`
+  exercises the actual shell filter. Add tests alongside new pure logic.
+- Nothing about the working setup may live only in a Claude session or in
+  `~/.claude` by hand: if it's needed to reproduce the setup, it belongs in
+  the repo (usually `claude/install.sh` or documented in a README).

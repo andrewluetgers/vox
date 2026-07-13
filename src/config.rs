@@ -46,7 +46,11 @@ pub fn expand_tilde(s: &str) -> PathBuf {
 /// Shared with the Claude Code integration (claude/ in this repo) and the
 /// vox-tray app — a repo can pin its own voice/speed/audio settings.
 pub fn project_overrides() -> Option<serde_json::Value> {
-    let mut dir = std::env::current_dir().ok()?;
+    project_overrides_in(&std::env::current_dir().ok()?)
+}
+
+pub fn project_overrides_in(start: &std::path::Path) -> Option<serde_json::Value> {
+    let mut dir = start.to_path_buf();
     loop {
         let candidate = dir.join(".vox.json");
         if candidate.is_file() {
@@ -67,8 +71,8 @@ pub fn shared_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_default().join(".claude").join("vox")
 }
 
-fn shared_state() -> serde_json::Value {
-    std::fs::read_to_string(shared_dir().join("state.json"))
+fn shared_state_in(dir: &std::path::Path) -> serde_json::Value {
+    std::fs::read_to_string(dir.join("state.json"))
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| serde_json::json!({}))
@@ -78,10 +82,13 @@ fn shared_state() -> serde_json::Value {
 /// shared save_history setting (last-spoken is always written so repeat-last
 /// works with history off). TTL pruning is done by vox-tray and the hook.
 pub fn log_history(source: &str, text: &str) {
-    let dir = shared_dir();
-    let _ = std::fs::create_dir_all(&dir);
+    log_history_in(&shared_dir(), source, text)
+}
+
+pub fn log_history_in(dir: &std::path::Path, source: &str, text: &str) {
+    let _ = std::fs::create_dir_all(dir);
     let _ = std::fs::write(dir.join("last-spoken.txt"), text);
-    if shared_state()["save_history"].as_bool() == Some(false) {
+    if shared_state_in(dir)["save_history"].as_bool() == Some(false) {
         return;
     }
     let ts = std::time::SystemTime::now()
@@ -101,8 +108,11 @@ pub fn log_history(source: &str, text: &str) {
 
 /// Last `n` shared-history entries, newest first: (source, text).
 pub fn recent_history(n: usize) -> Vec<(String, String)> {
-    let content =
-        std::fs::read_to_string(shared_dir().join("history.jsonl")).unwrap_or_default();
+    recent_history_in(&shared_dir(), n)
+}
+
+pub fn recent_history_in(dir: &std::path::Path, n: usize) -> Vec<(String, String)> {
+    let content = std::fs::read_to_string(dir.join("history.jsonl")).unwrap_or_default();
     let mut items: Vec<(String, String)> = content
         .lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
@@ -120,7 +130,11 @@ pub fn recent_history(n: usize) -> Vec<(String, String)> {
 }
 
 pub fn last_spoken() -> Option<String> {
-    std::fs::read_to_string(shared_dir().join("last-spoken.txt"))
+    last_spoken_in(&shared_dir())
+}
+
+pub fn last_spoken_in(dir: &std::path::Path) -> Option<String> {
+    std::fs::read_to_string(dir.join("last-spoken.txt"))
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -145,5 +159,58 @@ impl Config {
 
     pub fn audio_dir_path(&self) -> PathBuf {
         expand_tilde(&self.audio_dir)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("vox-test-{}-{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn project_overrides_found_by_walking_up() {
+        let root = tmp("proj");
+        let nested = root.join("a").join("b");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(root.join(".vox.json"), r#"{"voice": "bf_emma", "speed": 1.3}"#).unwrap();
+        let v = project_overrides_in(&nested).expect("should find .vox.json two levels up");
+        assert_eq!(v["voice"], "bf_emma");
+        assert_eq!(v["speed"], 1.3);
+    }
+
+    #[test]
+    fn project_overrides_ignores_invalid_json() {
+        let root = tmp("projbad");
+        std::fs::write(root.join(".vox.json"), "not json").unwrap();
+        assert!(project_overrides_in(&root).is_none());
+    }
+
+    #[test]
+    fn history_round_trip_newest_first() {
+        let dir = tmp("hist");
+        log_history_in(&dir, "tui", "first thing");
+        log_history_in(&dir, "claude", "second thing");
+        let items = recent_history_in(&dir, 10);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0], ("claude".to_string(), "second thing".to_string()));
+        assert_eq!(items[1], ("tui".to_string(), "first thing".to_string()));
+        assert_eq!(last_spoken_in(&dir).as_deref(), Some("second thing"));
+        // n caps the result
+        assert_eq!(recent_history_in(&dir, 1).len(), 1);
+    }
+
+    #[test]
+    fn history_respects_save_history_off_but_keeps_last_spoken() {
+        let dir = tmp("histoff");
+        std::fs::write(dir.join("state.json"), r#"{"save_history": false}"#).unwrap();
+        log_history_in(&dir, "tui", "quiet");
+        assert!(recent_history_in(&dir, 10).is_empty());
+        assert_eq!(last_spoken_in(&dir).as_deref(), Some("quiet"));
     }
 }

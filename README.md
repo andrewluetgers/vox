@@ -167,6 +167,27 @@ from it (settings saved from the UI still go to the global config.toml).
 | First sound | ~1–3 s (first sentence synthesizes alone) |
 | Synthesis pace | 2.5–3.6× faster than realtime, streams while playing |
 
+## Development
+
+```sh
+cargo build --release            # vox binary
+cargo test                       # unit tests + md2speech integration tests
+(cd tray && cargo build)         # menu-bar app (Tauri v2)
+rm -f ~/.local/bin/vox && cp target/release/vox ~/.local/bin/  # install
+./claude/install.sh              # (re)sync the Claude Code integration
+```
+
+Gotcha: on Apple Silicon, `cp` **over** an existing binary invalidates its
+code signature and macOS kills it on launch (`zsh: killed`, exit 137) —
+always remove the old file first, as above.
+
+Everything this repo does on a machine is reproducible from the repo:
+`claude/install.sh` materializes the hook/skill/filter into `~/.claude` and
+registers the Stop hook; the tray app and vox are plain cargo builds; files
+under `~/.claude/vox/` (state.json, history.jsonl, projects.json) are
+runtime state that auto-creates with defaults. See CLAUDE.md for repo
+conventions.
+
 ## History
 
 v0.1 was a Python implementation on mlx-audio (see git history). The Rust

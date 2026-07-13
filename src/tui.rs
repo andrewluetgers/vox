@@ -528,6 +528,57 @@ fn fmt_time(samples: f64) -> String {
     format!("{}:{:02}", (s as u64) / 60, (s as u64) % 60)
 }
 
+#[cfg(test)]
+mod hist_tests {
+    use super::*;
+
+    fn state_with(items: &[(&str, &str)], filters: &[&str], filter: usize) -> UiState {
+        UiState {
+            input: String::new(),
+            pastes: Vec::new(),
+            scroll_up: 0,
+            settings_open: false,
+            settings_sel: 0,
+            editing: None,
+            tick: 0,
+            hist_open: true,
+            hist_sel: 7,
+            hist_items: Vec::new(),
+            hist_all: items.iter().map(|(s, t)| (s.to_string(), t.to_string())).collect(),
+            hist_filters: filters.iter().map(|s| s.to_string()).collect(),
+            hist_filter: filter,
+            last_text: None,
+        }
+    }
+
+    #[test]
+    fn filter_all_caps_at_ten_and_resets_selection() {
+        let items: Vec<(String, String)> =
+            (0..15).map(|i| ("tui".to_string(), format!("item {i}"))).collect();
+        let refs: Vec<(&str, &str)> =
+            items.iter().map(|(s, t)| (s.as_str(), t.as_str())).collect();
+        let mut st = state_with(&refs, &["all"], 0);
+        apply_hist_filter(&mut st);
+        assert_eq!(st.hist_items.len(), 10);
+        assert_eq!(st.hist_sel, 0);
+    }
+
+    #[test]
+    fn filter_by_source_only_keeps_that_source() {
+        let mut st = state_with(
+            &[("claude", "from claude"), ("tui", "from tui"), ("claude", "more claude")],
+            &["all", "claude", "tui"],
+            1,
+        );
+        apply_hist_filter(&mut st);
+        assert_eq!(st.hist_items.len(), 2);
+        assert!(st.hist_items.iter().all(|(s, _)| s == "claude"));
+        st.hist_filter = 2;
+        apply_hist_filter(&mut st);
+        assert_eq!(st.hist_items, vec![("tui".to_string(), "from tui".to_string())]);
+    }
+}
+
 fn draw(
     f: &mut ratatui::Frame,
     st: &UiState,
