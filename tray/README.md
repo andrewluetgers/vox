@@ -9,9 +9,22 @@ other processes can speak through one place.
 
 - **Tray menu**: toggle "Speak Claude replies" (flips `enabled` in
   state.json, so it mutes the Claude Stop hook), stop speaking, speak
-  clipboard, speed presets, a small panel window with a speak box, quit.
-- **Global shortcut ⌃⌥⌘V**: speak the clipboard (vox `-c`); press it again
-  while speaking to stop. Workflow: ⌘C, then ⌃⌥⌘V.
+  clipboard, speed presets, panel window, quit.
+- **Panel window** (Open vox… in the tray): three tabs —
+  - **Speak**: text box (⌘↩ speaks, Esc stops), speak-clipboard button.
+  - **History**: the last 100 readouts from every source (Claude hook,
+    clipboard, socket, panel) with replay buttons.
+  - **Settings**: readouts on/off; voice picker that speaks a sample of the
+    voice you choose; speed with a test button; verbatim threshold; the
+    summarizer prompt with save/reset-to-default; a shortcut recorder for
+    every action (click Record, press keys — conflicts and invalid combos
+    are reported inline); audio saving (default off) with folder picker,
+    open-folder button, and delete-after TTL.
+- **Global shortcuts** (all configurable, defaults):
+  - ⌃⌥⌘V — speak clipboard; press again while speaking to stop
+  - ⌃⌥⌘S — stop speaking
+  - ⌃⌥⌘R — replay the last readout
+  - toggle readouts — unbound by default
 - **Socket API** at `~/.claude/vox/vox.sock` — newline-delimited JSON,
   one reply line per command:
 
@@ -20,8 +33,21 @@ other processes can speak through one place.
   echo '{"cmd":"stop"}'      | nc -U ~/.claude/vox/vox.sock
   echo '{"cmd":"clipboard"}' | nc -U ~/.claude/vox/vox.sock
   echo '{"cmd":"status"}'    | nc -U ~/.claude/vox/vox.sock
-  echo '{"cmd":"set","speed":1.4,"enabled":true}' | nc -U ~/.claude/vox/vox.sock
+  echo '{"cmd":"set","speed":1.4,"summary_prompt":"…"}' | nc -U ~/.claude/vox/vox.sock
   ```
+
+## Settings model
+
+Defaults live in code (and mirrored in the Claude hook); `state.json` stores
+only overrides, so resetting a setting removes its key. `set`/Settings
+changes apply to the next utterance and to the Claude hook's readouts.
+Per-project overrides live in a `.vox.json` at a repo root (see
+[claude/README.md](../claude/README.md)); those affect the hook, which runs
+inside the project, not this app.
+
+Audio saving is off by default so readouts don't accumulate; when on, wavs
+older than the TTL (default 20 min, 0 = keep) are pruned every two minutes
+while the app runs.
 
 ## Run
 
@@ -34,8 +60,7 @@ cargo build            # first build pulls the Tauri stack, takes a while
 ./target/debug/vox-tray &
 ```
 
-Quit from the tray menu. Note: macOS may ask for Accessibility/Input
-Monitoring permission the first time the global shortcut is registered.
+Quit from the tray menu.
 
 ## Spike notes / what's next
 
@@ -45,5 +70,9 @@ Monitoring permission the first time the global shortcut is registered.
 - The Claude Stop hook could prefer the socket when `vox.sock` exists
   (falling back to spawning `vox`), which would serialize all speech
   through the daemon.
+- The tray "enabled" checkbox doesn't refresh if state.json is edited
+  externally while the menu is open.
+- Voice selection in the standalone vox CLI/TUI is separate (vox's own
+  config.toml); unifying the two config systems is a vox-core change.
 - No bundling/codesigning yet (`bundle.active: false`); `cargo tauri build`
   + Developer ID notarization is the distribution path, no App Store needed.

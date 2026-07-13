@@ -37,17 +37,28 @@ Uninstall with `./claude/install.sh --uninstall`.
   Claude's final message from the session transcript, saves the original to
   `~/.claude/vox/last-full.txt`, then speaks it. Responses over
   `verbatim_max` chars (default 300) are first rewritten into 1–3 spoken
-  sentences by `claude -p --model haiku --no-session-persistence` — a
-  separate headless process that never touches your chat thread or writes a
-  transcript. The hook runs async, so your prompt is never blocked, and it
-  skips re-speaking on resume/clear/compact.
+  sentences by a headless Haiku call (`claude -p --no-session-persistence`,
+  tools disabled, the summarizer prompt as its system prompt) — a separate
+  process that never touches your chat thread or writes a transcript. The
+  hook runs async, so your prompt is never blocked; it skips re-speaking on
+  resume/clear/compact, logs every readout to `history.jsonl`, and caps
+  runaway summaries at ~900 chars.
 - **`skills/vox/SKILL.md`** (the `/vox` skill): teaches Claude that "vox,
   ..." is about the audio, not the code. Supports: `stop`, `off`/`on`,
   `repeat that`, `read me the whole thing` (the original, unsummarized
-  output), `slower`/`faster`, `voice <name>`, `status`.
-- **`~/.claude/vox/state.json`**: `enabled`, `voice`, `speed`,
-  `verbatim_max` — read live by the hook on every readout, edited by the
-  skill or by hand.
+  output), `slower`/`faster`, `voice <name>`, `status`, changing or
+  resetting the summarizer prompt, and audio saving.
+- **`~/.claude/vox/state.json`**: settings shared by the hook, the skill,
+  and the [vox-tray app](../tray/). All keys optional; defaults in
+  parentheses: `enabled` (true), `voice` (bm_george), `speed` (1.1),
+  `verbatim_max` (300), `summary_prompt` (built-in), `save_audio` (false —
+  readouts aren't kept), `audio_dir` (~/Music/vox), `audio_ttl_minutes`
+  (20; the tray app prunes older wavs when saving is on).
+- **Per-project overrides**: a `.vox.json` at the project root overrides any
+  state.json key for that repo — e.g. `{"voice": "bf_emma"}` to give a
+  project its own voice, `{"summary_prompt": "..."}` for a custom readout
+  style, or `{"enabled": false}` to silence a noisy project. The hook finds
+  it by walking up from its working directory.
 
 One subtlety: after a vox command like "repeat that", Claude's own
 confirmation would trigger a fresh readout that talks over the replay. The

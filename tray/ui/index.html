@@ -5,50 +5,313 @@
 <title>vox</title>
 <style>
   :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
   body {
-    font-family: -apple-system, sans-serif;
-    margin: 0; padding: 16px;
-    display: flex; flex-direction: column; gap: 10px; height: 100vh; box-sizing: border-box;
+    font-family: -apple-system, sans-serif; font-size: 13px;
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
   }
-  textarea {
-    flex: 1; resize: none; font: inherit; padding: 8px;
-    border-radius: 8px; border: 1px solid rgba(128,128,128,.4);
-    background: transparent; color: inherit;
+  nav {
+    display: flex; gap: 4px; padding: 10px 14px 0;
+    border-bottom: 1px solid rgba(128,128,128,.25);
   }
-  .row { display: flex; gap: 8px; align-items: center; }
-  button {
-    font: inherit; padding: 6px 14px; border-radius: 8px;
-    border: 1px solid rgba(128,128,128,.4); background: transparent; color: inherit; cursor: pointer;
+  nav button {
+    font: inherit; padding: 6px 14px; cursor: pointer; color: inherit;
+    background: transparent; border: none; border-bottom: 2px solid transparent;
+    opacity: .65;
   }
-  button.primary { background: #4a7dfc; border-color: #4a7dfc; color: white; }
-  #state { margin-left: auto; opacity: .6; font-size: 12px; }
+  nav button.active { border-bottom-color: #4a7dfc; opacity: 1; font-weight: 600; }
+  nav #statechip { margin-left: auto; align-self: center; opacity: .55; font-size: 11px; padding-bottom: 6px; }
+  main { flex: 1; overflow-y: auto; padding: 14px; }
+  section.tab { display: none; }
+  section.tab.active { display: block; }
+
+  textarea, input[type=text], input[type=number], select {
+    font: inherit; color: inherit; background: transparent;
+    border: 1px solid rgba(128,128,128,.4); border-radius: 7px; padding: 6px 8px;
+  }
+  textarea { width: 100%; resize: vertical; }
+  button.btn {
+    font: inherit; padding: 5px 12px; border-radius: 7px; cursor: pointer;
+    border: 1px solid rgba(128,128,128,.4); background: transparent; color: inherit;
+  }
+  button.btn.primary { background: #4a7dfc; border-color: #4a7dfc; color: white; }
+  .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+  .row label:first-child { min-width: 130px; opacity: .8; }
+  h3 { margin: 18px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; opacity: .6; }
+  h3:first-child { margin-top: 0; }
+  .hint { font-size: 11px; opacity: .55; margin: 2px 0 0; }
+  .err { color: #e5534b; font-size: 12px; }
+
+  /* history */
+  .hentry {
+    padding: 8px 10px; border: 1px solid rgba(128,128,128,.25); border-radius: 8px;
+    margin-bottom: 8px; display: flex; gap: 10px; align-items: flex-start;
+  }
+  .hentry .meta { flex-shrink: 0; width: 92px; opacity: .55; font-size: 11px; }
+  .hentry .meta .src {
+    display: inline-block; padding: 1px 6px; border-radius: 6px; margin-top: 2px;
+    background: rgba(74,125,252,.15); font-size: 10px;
+  }
+  .hentry .text {
+    flex: 1; white-space: pre-wrap; word-break: break-word;
+    max-height: 72px; overflow: hidden; cursor: default;
+  }
+  .hentry .text.open { max-height: none; }
+  .hentry button { align-self: center; }
+
+  /* shortcuts */
+  table.shortcuts { border-collapse: collapse; width: 100%; }
+  table.shortcuts td { padding: 5px 6px; border-bottom: 1px solid rgba(128,128,128,.15); }
+  kbd {
+    font-family: inherit; padding: 2px 8px; border-radius: 6px;
+    border: 1px solid rgba(128,128,128,.4); background: rgba(128,128,128,.12);
+  }
+  kbd.recording { border-color: #4a7dfc; color: #4a7dfc; }
+  kbd.none { opacity: .4; border-style: dashed; }
 </style>
 </head>
 <body>
-<textarea id="text" placeholder="Type or paste text, then Speak (⌘↩)"></textarea>
-<div class="row">
-  <button class="primary" id="speak">Speak</button>
-  <button id="stop">Stop</button>
-  <span id="state"></span>
-</div>
+<nav>
+  <button data-tab="speak" class="active">Speak</button>
+  <button data-tab="history">History</button>
+  <button data-tab="settings">Settings</button>
+  <span id="statechip"></span>
+</nav>
+<main>
+
+<section class="tab active" id="tab-speak">
+  <textarea id="text" rows="8" placeholder="Type or paste text, then Speak (⌘↩ · Esc stops)"></textarea>
+  <div class="row">
+    <button class="btn primary" id="speakbtn">Speak</button>
+    <button class="btn" id="stopbtn">Stop</button>
+    <button class="btn" id="clipbtn">Speak clipboard</button>
+  </div>
+</section>
+
+<section class="tab" id="tab-history">
+  <div class="row" style="margin-top:0">
+    <span class="hint">Last 100 readouts, newest first. Click text to expand.</span>
+    <span style="flex:1"></span>
+    <button class="btn" id="clearhist">Clear history</button>
+  </div>
+  <div id="histlist"></div>
+</section>
+
+<section class="tab" id="tab-settings">
+  <h3>Readouts</h3>
+  <div class="row"><label>Speak Claude replies</label><input type="checkbox" id="s-enabled"></div>
+  <div class="row">
+    <label>Voice</label>
+    <select id="s-voice"></select>
+    <span class="hint">picking a voice plays a sample</span>
+  </div>
+  <div class="row"><label>Speed</label>
+    <input type="number" id="s-speed" min="0.5" max="3" step="0.05" style="width:80px">
+    <button class="btn" id="speedtest">Test</button>
+  </div>
+  <div class="row"><label>Verbatim under</label>
+    <input type="number" id="s-verbatim" min="0" step="50" style="width:90px"> <span class="hint">chars — shorter replies skip the summarizer</span>
+  </div>
+
+  <h3>Summarizer prompt</h3>
+  <textarea id="s-prompt" rows="5"></textarea>
+  <div class="row">
+    <button class="btn primary" id="saveprompt">Save prompt</button>
+    <button class="btn" id="resetprompt">Reset to default</button>
+    <span class="hint" id="promptstate"></span>
+  </div>
+
+  <h3>Shortcuts</h3>
+  <table class="shortcuts">
+    <tr><td>Speak clipboard (again = stop)</td><td><kbd data-action="speak_clipboard"></kbd></td>
+        <td><button class="btn" data-rec="speak_clipboard">Record</button>
+            <button class="btn" data-clear="speak_clipboard">Clear</button></td></tr>
+    <tr><td>Stop speaking</td><td><kbd data-action="stop"></kbd></td>
+        <td><button class="btn" data-rec="stop">Record</button>
+            <button class="btn" data-clear="stop">Clear</button></td></tr>
+    <tr><td>Replay last readout</td><td><kbd data-action="replay_last"></kbd></td>
+        <td><button class="btn" data-rec="replay_last">Record</button>
+            <button class="btn" data-clear="replay_last">Clear</button></td></tr>
+    <tr><td>Toggle Claude readouts</td><td><kbd data-action="toggle_readouts"></kbd></td>
+        <td><button class="btn" data-rec="toggle_readouts">Record</button>
+            <button class="btn" data-clear="toggle_readouts">Clear</button></td></tr>
+  </table>
+  <p class="hint">Click Record, then press the key combo. Esc cancels.</p>
+  <p class="err" id="shortcuterr"></p>
+
+  <h3>Audio files</h3>
+  <div class="row"><label>Save readout audio</label><input type="checkbox" id="s-save"></div>
+  <div class="row"><label>Folder</label>
+    <input type="text" id="s-dir" style="flex:1">
+    <button class="btn" id="opendir">Open folder</button>
+  </div>
+  <div class="row"><label>Delete after</label>
+    <input type="number" id="s-ttl" min="0" step="5" style="width:80px"> <span class="hint">minutes (0 = keep forever)</span>
+  </div>
+  <p class="hint">Off by default so readouts don't fill the disk. Applies to the
+     Claude hook and this app; the vox CLI's own saving is configured in vox itself.</p>
+  <p class="hint">Per-project overrides: put a <code>.vox.json</code> in a repo root
+     (e.g. <code>{"voice": "bf_emma", "enabled": false}</code>) to override any of
+     these for Claude readouts in that project.</p>
+</section>
+
+</main>
 <script>
   const invoke = window.__TAURI__.core.invoke;
-  const $ = (id) => document.getElementById(id);
-  $('speak').onclick = () => invoke('speak', { text: $('text').value });
-  $('stop').onclick = () => invoke('stop');
-  document.addEventListener('keydown', (e) => {
-    if (e.metaKey && e.key === 'Enter') $('speak').click();
-    if (e.key === 'Escape') $('stop').click();
+  const $ = (s) => document.querySelector(s);
+  const $$ = (s) => [...document.querySelectorAll(s)];
+
+  // --- tabs ---
+  $$('nav button[data-tab]').forEach(b => b.onclick = () => {
+    $$('nav button').forEach(x => x.classList.remove('active'));
+    $$('section.tab').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    $('#tab-' + b.dataset.tab).classList.add('active');
+    if (b.dataset.tab === 'history') loadHistory();
+    if (b.dataset.tab === 'settings') loadSettings();
   });
-  async function refresh() {
+
+  // --- speak tab ---
+  $('#speakbtn').onclick = () => invoke('speak', { text: $('#text').value });
+  $('#stopbtn').onclick = () => invoke('stop');
+  $('#clipbtn').onclick = async () => { await invoke('speak', { text: await navigator.clipboard.readText().catch(() => '') }); };
+  document.addEventListener('keydown', (e) => {
+    if (recording) return;
+    if (e.metaKey && e.key === 'Enter') invoke('speak', { text: $('#text').value });
+    if (e.key === 'Escape') invoke('stop');
+  });
+
+  // --- status chip ---
+  async function refreshChip() {
     try {
       const s = await invoke('status');
-      $('state').textContent =
+      $('#statechip').textContent =
         `${s.enabled ? 'readouts on' : 'readouts off'} · ${s.voice} · ${s.speed}x${s.speaking ? ' · speaking' : ''}`;
     } catch {}
   }
-  refresh();
-  setInterval(refresh, 1500);
+  refreshChip(); setInterval(refreshChip, 1500);
+
+  // --- history tab ---
+  function ago(ts) {
+    const d = Math.max(0, Date.now()/1000 - ts);
+    if (d < 60) return `${d|0}s ago`;
+    if (d < 3600) return `${d/60|0}m ago`;
+    if (d < 86400) return `${d/3600|0}h ago`;
+    return new Date(ts*1000).toLocaleDateString();
+  }
+  async function loadHistory() {
+    const list = await invoke('get_history');
+    $('#histlist').innerHTML = '';
+    for (const e of list) {
+      const div = document.createElement('div');
+      div.className = 'hentry';
+      const meta = document.createElement('div'); meta.className = 'meta';
+      meta.innerHTML = `${ago(e.ts)}<br><span class="src">${e.source || '?'}</span>`;
+      const text = document.createElement('div'); text.className = 'text';
+      text.textContent = e.text; text.onclick = () => text.classList.toggle('open');
+      const btn = document.createElement('button'); btn.className = 'btn';
+      btn.textContent = 'Replay'; btn.onclick = () => invoke('speak', { text: e.text });
+      div.append(meta, text, btn);
+      $('#histlist').append(div);
+    }
+    if (!list.length) $('#histlist').innerHTML = '<p class="hint">Nothing spoken yet.</p>';
+  }
+  $('#clearhist').onclick = async () => { await invoke('clear_history'); loadHistory(); };
+
+  // --- settings tab ---
+  let cfg = null;
+  const symbols = { ctrl: '⌃', alt: '⌥', shift: '⇧', super: '⌘' };
+  const pretty = (accel) => accel
+    ? accel.split('+').map(p => symbols[p] || p.toUpperCase()).join('')
+    : 'none';
+
+  async function loadSettings() {
+    cfg = await invoke('get_settings');
+    const s = cfg.settings;
+    $('#s-enabled').checked = !!s.enabled;
+    const sel = $('#s-voice');
+    sel.innerHTML = '';
+    for (const v of cfg.voices) {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = v;
+      sel.append(o);
+    }
+    sel.value = s.voice;
+    $('#s-speed').value = s.speed;
+    $('#s-verbatim').value = s.verbatim_max;
+    $('#s-prompt').value = s.summary_prompt;
+    $('#promptstate').textContent = cfg.prompt_overridden ? 'custom prompt' : 'default prompt';
+    $('#s-save').checked = !!s.save_audio;
+    $('#s-dir').value = s.audio_dir;
+    $('#s-ttl').value = s.audio_ttl_minutes;
+    for (const kbd of $$('kbd[data-action]')) {
+      const accel = s.shortcuts[kbd.dataset.action] || '';
+      kbd.textContent = pretty(accel);
+      kbd.classList.toggle('none', !accel);
+    }
+  }
+
+  async function patch(p) {
+    const r = await invoke('save_settings', { patch: p });
+    $('#shortcuterr').textContent = (r.shortcut_errors || []).join(' · ');
+    await loadSettings(); refreshChip();
+  }
+
+  $('#s-enabled').onchange = () => patch({ enabled: $('#s-enabled').checked });
+  $('#s-voice').onchange = async () => {
+    await patch({ voice: $('#s-voice').value });
+    invoke('preview_voice', { voice: $('#s-voice').value });
+  };
+  $('#s-speed').onchange = () => patch({ speed: +$('#s-speed').value });
+  $('#speedtest').onclick = () => invoke('speak', { text: `This is ${$('#s-speed').value} times normal speed.` });
+  $('#s-verbatim').onchange = () => patch({ verbatim_max: +$('#s-verbatim').value });
+  $('#saveprompt').onclick = () => patch({ summary_prompt: $('#s-prompt').value });
+  $('#resetprompt').onclick = () => patch({ summary_prompt: cfg.defaults.summary_prompt });
+  $('#s-save').onchange = () => patch({ save_audio: $('#s-save').checked });
+  $('#s-dir').onchange = () => patch({ audio_dir: $('#s-dir').value });
+  $('#s-ttl').onchange = () => patch({ audio_ttl_minutes: +$('#s-ttl').value });
+  $('#opendir').onclick = () => invoke('open_audio_dir');
+
+  // --- shortcut recorder ---
+  let recording = null;
+  function stopRecording() {
+    if (!recording) return;
+    recording.kbd.classList.remove('recording');
+    document.removeEventListener('keydown', onRecordKey, true);
+    recording = null;
+    loadSettings();
+  }
+  function onRecordKey(e) {
+    e.preventDefault(); e.stopPropagation();
+    if (e.key === 'Escape') return stopRecording();
+    if (['Control','Alt','Shift','Meta'].includes(e.key)) return;
+    let key = null;
+    if (/^Key[A-Z]$/.test(e.code)) key = e.code.slice(3).toLowerCase();
+    else if (/^Digit\d$/.test(e.code)) key = e.code.slice(5);
+    else if (/^F\d+$/.test(e.code)) key = e.code;
+    else if (e.code === 'Space') key = 'space';
+    if (!key) return;
+    const mods = [];
+    if (e.ctrlKey) mods.push('ctrl');
+    if (e.altKey) mods.push('alt');
+    if (e.shiftKey) mods.push('shift');
+    if (e.metaKey) mods.push('super');
+    const accel = [...mods, key].join('+');
+    const action = recording.action;
+    stopRecording();
+    patch({ shortcuts: { ...cfg.settings.shortcuts, [action]: accel } });
+  }
+  $$('button[data-rec]').forEach(b => b.onclick = () => {
+    stopRecording();
+    const kbd = $(`kbd[data-action="${b.dataset.rec}"]`);
+    kbd.textContent = 'press keys…'; kbd.classList.add('recording');
+    recording = { action: b.dataset.rec, kbd };
+    document.addEventListener('keydown', onRecordKey, true);
+  });
+  $$('button[data-clear]').forEach(b => b.onclick = () =>
+    patch({ shortcuts: { ...cfg.settings.shortcuts, [b.dataset.clear]: '' } }));
+
+  loadSettings();
 </script>
 </body>
 </html>

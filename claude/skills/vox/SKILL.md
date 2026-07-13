@@ -12,16 +12,34 @@ CLI. This skill is the control surface for that readout. When the user says
 
 ## State
 
-`~/.claude/vox/state.json` — read live by the hook on every readout:
+`~/.claude/vox/state.json` — read live by the hook on every readout. Any key
+may be omitted; defaults shown:
 
 ```json
-{ "enabled": true, "voice": "bm_george", "speed": 1.1, "verbatim_max": 300 }
+{ "enabled": true, "voice": "bm_george", "speed": 1.1, "verbatim_max": 300,
+  "summary_prompt": "(built-in default)", "save_audio": false,
+  "audio_dir": "~/Music/vox", "audio_ttl_minutes": 20 }
 ```
+
+**Per-project overrides**: a `.vox.json` at the project root overrides any of
+these keys for readouts in that repo — e.g. `{"voice": "bf_emma"}` or
+`{"enabled": false}`. When the user says "for this project", edit `.vox.json`
+in the repo root; otherwise edit the global state.json.
+
+**Summarizer prompt**: `summary_prompt` replaces the hook's built-in
+instruction (it becomes the system prompt of a headless Haiku call). Reset to
+default by deleting the key (`jq 'del(.summary_prompt)'`). The built-in
+default is `DEFAULT_PROMPT` in `~/.claude/vox/vox-speak.sh` — show it from
+there when the user asks to see the prompt and no override is set.
 
 Other files in `~/.claude/vox/`:
 - `last-full.txt` — the original, unsummarized last response
 - `last-spoken.txt` — what was actually read aloud
+- `history.jsonl` — one `{ts, source, text}` line per readout
 - `skip-next` — if present, the hook skips exactly one readout and deletes it
+- `vox.sock` — present when the vox-tray menu-bar app is running; you can
+  drive it with JSON lines via `nc -U` (`{"cmd":"speak","text":"..."}`,
+  `{"cmd":"stop"}`, `{"cmd":"status"}`, `{"cmd":"set","speed":1.2}`)
 
 ## The skip-next rule (important)
 
@@ -78,6 +96,15 @@ af_sarah (American).
 
 **status** — `cat ~/.claude/vox/state.json`, report enabled/voice/speed in
 one sentence, then touch skip-next.
+
+**change the prompt / summarize differently** — set `.summary_prompt` in
+state.json (or `.vox.json` for one project), then touch skip-next. Phrase it
+as a role instruction, e.g. "You rewrite coding-assistant responses as …".
+"Reset the prompt" = delete the key.
+
+**save audio on/off** — set `.save_audio` (and optionally `.audio_dir`,
+`.audio_ttl_minutes`; TTL 0 keeps files forever). Files older than the TTL
+are pruned by the vox-tray app when it's running. Touch skip-next.
 
 If state.json is missing, the hook recreates it with defaults on the next
 turn; you can also create it with the JSON shown above.
