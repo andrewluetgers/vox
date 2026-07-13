@@ -90,7 +90,8 @@
 
 <section class="tab" id="tab-history">
   <div class="row" style="margin-top:0">
-    <span class="hint">Last 100 readouts, newest first. Click text to expand.</span>
+    <span class="hint">Newest first. Click text to expand. Retention is set in
+      Settings → Text history.</span>
     <span style="flex:1"></span>
     <button class="btn" id="clearhist">Clear history</button>
   </div>
@@ -139,7 +140,31 @@
   <p class="hint">Click Record, then press the key combo. Esc cancels.</p>
   <p class="err" id="shortcuterr"></p>
 
+  <h3>Text history</h3>
+  <p class="hint">Everything spoken is logged as <b>text</b> to
+     <code>~/.claude/vox/history.jsonl</code> so the History tab can browse and
+     replay it. Entries are deleted after the retention window below. The single
+     most-recent readout is always kept separately, so "vox, repeat that" works
+     even with history off.</p>
+  <div class="row"><label>Keep text history</label><input type="checkbox" id="s-hist"></div>
+  <div class="row"><label>Delete after</label>
+    <input type="number" id="s-histttl" min="0" step="5" style="width:80px">
+    <span class="hint">minutes (0 = keep, capped at 500 entries)</span>
+  </div>
+
+  <h3>Markdown handling</h3>
+  <p class="hint">Formatting is spoken as <b>pauses, never syntax</b>: bold and
+     code markers vanish, headers and bullets become their own sentences, code
+     blocks say "code block omitted", links read their text. This is a
+     deterministic script — not a prompt, no AI involved — so it's instant and
+     runs on everything spoken. Edits apply from the next utterance.</p>
+  <div class="row"><button class="btn" id="openfilter">Edit rules (md2speech.sh)</button></div>
+
   <h3>Audio files</h3>
+  <p class="hint">⚠️ Saved audio is <b>uncompressed WAV — roughly 3&nbsp;MB per
+     spoken minute</b>. Leaving this on without a delete-after window can use a
+     lot of disk. Off by default; applies to the Claude hook and this app (the
+     vox CLI's own saving is configured in vox itself).</p>
   <div class="row"><label>Save readout audio</label><input type="checkbox" id="s-save"></div>
   <div class="row"><label>Folder</label>
     <input type="text" id="s-dir" style="flex:1">
@@ -148,8 +173,6 @@
   <div class="row"><label>Delete after</label>
     <input type="number" id="s-ttl" min="0" step="5" style="width:80px"> <span class="hint">minutes (0 = keep forever)</span>
   </div>
-  <p class="hint">Off by default so readouts don't fill the disk. Applies to the
-     Claude hook and this app; the vox CLI's own saving is configured in vox itself.</p>
   <p class="hint">Per-project overrides: put a <code>.vox.json</code> in a repo root
      (e.g. <code>{"voice": "bf_emma", "enabled": false}</code>) to override any of
      these for Claude readouts in that project.</p>
@@ -245,6 +268,8 @@
     $('#s-save').checked = !!s.save_audio;
     $('#s-dir').value = s.audio_dir;
     $('#s-ttl').value = s.audio_ttl_minutes;
+    $('#s-hist').checked = !!s.save_history;
+    $('#s-histttl').value = s.history_ttl_minutes;
     for (const kbd of $$('kbd[data-action]')) {
       const accel = s.shortcuts[kbd.dataset.action] || '';
       kbd.textContent = pretty(accel);
@@ -272,6 +297,9 @@
   $('#s-dir').onchange = () => patch({ audio_dir: $('#s-dir').value });
   $('#s-ttl').onchange = () => patch({ audio_ttl_minutes: +$('#s-ttl').value });
   $('#opendir').onclick = () => invoke('open_audio_dir');
+  $('#s-hist').onchange = () => patch({ save_history: $('#s-hist').checked });
+  $('#s-histttl').onchange = () => patch({ history_ttl_minutes: +$('#s-histttl').value });
+  $('#openfilter').onclick = () => invoke('open_md_filter');
 
   // --- shortcut recorder ---
   let recording = null;

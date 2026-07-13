@@ -45,9 +45,19 @@ Per-project overrides live in a `.vox.json` at a repo root (see
 [claude/README.md](../claude/README.md)); those affect the hook, which runs
 inside the project, not this app.
 
-Audio saving is off by default so readouts don't accumulate; when on, wavs
-older than the TTL (default 20 min, 0 = keep) are pruned every two minutes
-while the app runs.
+Two retention systems, both explicit in Settings:
+
+- **Text history** (on by default): spoken text logs to `history.jsonl` for
+  the History tab; entries older than `history_ttl_minutes` (default 20,
+  0 = keep) are pruned on write and every two minutes while the app runs.
+  The most recent readout is always kept separately so replay-last works
+  with history off.
+- **Audio files** (off by default): uncompressed WAV, ~3 MB per spoken
+  minute — the Settings section carries a storage warning. When on, wavs
+  older than `audio_ttl_minutes` are pruned on the same timer.
+
+Markdown handling is a deterministic filter (`~/.claude/vox/md2speech.sh`),
+not a prompt — "Edit rules" in Settings opens it in your editor.
 
 ## Run
 

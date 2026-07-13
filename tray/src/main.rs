@@ -115,6 +115,8 @@ fn effective_state() -> Value {
         "save_audio": false,
         "audio_dir": "~/Music/vox",
         "audio_ttl_minutes": 20,
+        "save_history": true,
+        "history_ttl_minutes": 20,
         "shortcuts": default_shortcuts_json(),
     });
     if let (Some(e), Some(s)) = (eff.as_object_mut(), stored.as_object()) {
@@ -242,17 +244,67 @@ fn speakable(text: &str) -> String {
     text.to_string()
 }
 
+fn history_cutoff(state: &Value) -> u64 {
+    let ttl_min = state["history_ttl_minutes"].as_f64().unwrap_or(20.0);
+    if ttl_min > 0.0 {
+        now_secs().saturating_sub((ttl_min * 60.0) as u64)
+    } else {
+        0 // 0 = keep (still capped at 500 entries)
+    }
+}
+
 fn add_history(source: &str, text: &str) {
+    let state = effective_state();
+    if !state["save_history"].as_bool().unwrap_or(true) {
+        return;
+    }
+    let cutoff = history_cutoff(&state);
     let entry = json!({"ts": now_secs(), "source": source, "text": text});
     let path = history_path();
     let _ = fs::create_dir_all(vox_dir());
     let mut lines: Vec<String> = fs::read_to_string(&path)
-        .map(|s| s.lines().map(str::to_string).collect())
+        .map(|s| {
+            s.lines()
+                .filter(|l| {
+                    serde_json::from_str::<Value>(l)
+                        .map(|v| v["ts"].as_u64().unwrap_or(0) >= cutoff)
+                        .unwrap_or(false)
+                })
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default();
     lines.push(entry.to_string());
     // Cap the history file so it can't grow without bound.
     let start = lines.len().saturating_sub(500);
     let _ = fs::write(&path, lines[start..].join("\n") + "\n");
+}
+
+/// Drop history entries older than the TTL (runs on the pruner timer, so
+/// text ages out even when nothing new is spoken).
+fn prune_history_once() {
+    let state = effective_state();
+    let cutoff = history_cutoff(&state);
+    if cutoff == 0 {
+        return;
+    }
+    let path = history_path();
+    let Ok(content) = fs::read_to_string(&path) else { return };
+    let kept: Vec<&str> = content
+        .lines()
+        .filter(|l| {
+            serde_json::from_str::<Value>(l)
+                .map(|v| v["ts"].as_u64().unwrap_or(0) >= cutoff)
+                .unwrap_or(false)
+        })
+        .collect();
+    if kept.len() < content.lines().count() {
+        if kept.is_empty() {
+            let _ = fs::remove_file(&path);
+        } else {
+            let _ = fs::write(&path, kept.join("\n") + "\n");
+        }
+    }
 }
 
 fn speak_text(text: &str, source: &str) {
@@ -447,9 +499,10 @@ fn prune_audio_once() {
     }
 }
 
-fn start_audio_pruner() {
+fn start_pruner() {
     std::thread::spawn(|| loop {
         prune_audio_once();
+        prune_history_once();
         std::thread::sleep(Duration::from_secs(120));
     });
 }
@@ -566,6 +619,17 @@ fn clear_history() {
     let _ = fs::remove_file(history_path());
 }
 
+/// Open the markdown-to-speech rules script in the default text editor.
+/// It's a deterministic filter (awk), not a prompt — edits apply to the
+/// next utterance, no restart needed.
+#[tauri::command]
+fn open_md_filter() {
+    let script = vox_dir().join("md2speech.sh");
+    if script.exists() {
+        let _ = Command::new("open").arg("-t").arg(&script).status();
+    }
+}
+
 #[tauri::command]
 fn open_audio_dir() {
     let dir = expand_tilde(effective_state()["audio_dir"].as_str().unwrap_or("~/Music/vox"));
@@ -584,14 +648,15 @@ fn main() {
             preview_voice,
             get_history,
             clear_history,
-            open_audio_dir
+            open_audio_dir,
+            open_md_filter
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             start_socket_server(app.handle().clone());
-            start_audio_pruner();
+            start_pruner();
 
             app.handle().plugin(
                 tauri_plugin_global_shortcut::Builder::new()

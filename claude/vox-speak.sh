@@ -130,11 +130,24 @@ else
 fi
 
 printf '%s' "$SPOKEN" >"$VOX_DIR/last-spoken.txt"
-# The hook runs with cwd = the Claude session's project, so history can say
-# which repo was talking.
-PROJECT=$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")
-jq -nc --arg ts "$(date +%s)" --arg text "$SPOKEN" --arg project "$PROJECT" \
-  '{ts: ($ts | tonumber), source: "claude", project: $project, text: $text}' >>"$VOX_DIR/history.jsonl"
+
+# Text history (browsable/replayable in vox-tray): optional and TTL-bound.
+# last-full/last-spoken above are always kept — "repeat that" works even
+# with history off.
+if [ "$(cfg save_history true)" = "true" ]; then
+  # The hook runs with cwd = the Claude session's project, so history can
+  # say which repo was talking.
+  PROJECT=$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")
+  jq -nc --arg ts "$(date +%s)" --arg text "$SPOKEN" --arg project "$PROJECT" \
+    '{ts: ($ts | tonumber), source: "claude", project: $project, text: $text}' >>"$VOX_DIR/history.jsonl"
+  TTL=$(cfg history_ttl_minutes 20)
+  TTL=${TTL%.*}
+  if [ "$TTL" -gt 0 ] 2>/dev/null; then
+    CUT=$(($(date +%s) - TTL * 60))
+    jq -c --argjson cut "$CUT" 'select(.ts >= $cut)' "$VOX_DIR/history.jsonl" \
+      >"$VOX_DIR/history.jsonl.tmp" 2>/dev/null && mv "$VOX_DIR/history.jsonl.tmp" "$VOX_DIR/history.jsonl"
+  fi
+fi
 
 # Audio saving: off by default so readouts don't accumulate on disk.
 SAVE_ARGS=()

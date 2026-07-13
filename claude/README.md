@@ -51,9 +51,21 @@ Uninstall with `./claude/install.sh --uninstall`.
 - **`~/.claude/vox/state.json`**: settings shared by the hook, the skill,
   and the [vox-tray app](../tray/). All keys optional; defaults in
   parentheses: `enabled` (true), `voice` (bm_george), `speed` (1.1),
-  `verbatim_max` (300), `summary_prompt` (built-in), `save_audio` (false —
-  readouts aren't kept), `audio_dir` (~/Music/vox), `audio_ttl_minutes`
-  (20; the tray app prunes older wavs when saving is on).
+  `verbatim_max` (300), `summary_prompt` (built-in), `save_history` (true —
+  spoken text is logged to `history.jsonl` for browsing/replay),
+  `history_ttl_minutes` (20; 0 = keep, capped at 500 entries),
+  `save_audio` (false — wavs are uncompressed, ~3 MB per spoken minute),
+  `audio_dir` (~/Music/vox), `audio_ttl_minutes` (20; the tray app prunes
+  older wavs when saving is on). The most recent readout
+  (last-full/last-spoken) is always kept so "repeat that" works even with
+  history off.
+- **`md2speech.sh`**: markdown → speakable text, used by every speech path.
+  A deterministic awk filter, not a prompt: formatting markers are never
+  spoken, structure becomes pauses (headers/bullets end as sentences,
+  numbered items keep their numbers, code blocks collapse to "Code block
+  omitted", links read their text). Edit the installed copy at
+  `~/.claude/vox/md2speech.sh` to change the rules; changes apply to the
+  next utterance.
 - **Per-project overrides**: a `.vox.json` at the project root overrides any
   state.json key for that repo — e.g. `{"voice": "bf_emma"}` to give a
   project its own voice, `{"summary_prompt": "..."}` for a custom readout

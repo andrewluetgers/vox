@@ -17,9 +17,15 @@ may be omitted; defaults shown:
 
 ```json
 { "enabled": true, "voice": "bm_george", "speed": 1.1, "verbatim_max": 300,
-  "summary_prompt": "(built-in default)", "save_audio": false,
-  "audio_dir": "~/Music/vox", "audio_ttl_minutes": 20 }
+  "summary_prompt": "(built-in default)",
+  "save_history": true, "history_ttl_minutes": 20,
+  "save_audio": false, "audio_dir": "~/Music/vox", "audio_ttl_minutes": 20 }
 ```
+
+`save_history` logs spoken text to history.jsonl (TTL-pruned); last-spoken
+always works regardless. `save_audio` keeps uncompressed wavs (~3 MB per
+spoken minute) — warn the user about disk use if they turn it on without a
+TTL.
 
 **Per-project overrides**: a `.vox.json` at the project root overrides any of
 these keys for readouts in that repo — e.g. `{"voice": "bf_emma"}` or
