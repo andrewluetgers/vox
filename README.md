@@ -1,10 +1,13 @@
+
 # vox
 
 Local streaming text-to-speech CLI in a single Rust binary. Kokoro-82M via
 ONNX Runtime — no cloud, no API keys, no Python. First word in ~1–3 seconds,
 synthesis 2.5–3.6× faster than realtime on an M1 Pro.
 
-Default voice is `bm_george`, a mature British male.
+<img width="829" height="1206" alt="Screenshot 2026-07-13 at 1 02 48 PM" src="https://github.com/user-attachments/assets/fc157881-a72c-4732-a8e2-a63375ad12f4" />
+
+<img width="231" height="279" alt="Screenshot 2026-07-13 at 1 12 59 PM" src="https://github.com/user-attachments/assets/5258bdf0-783b-4c40-be74-61a49ec4d7cf" />
 
 ## Install
 
