@@ -218,6 +218,12 @@ struct UiState {
     settings_sel: usize,
     editing: Option<String>,
     tick: usize,
+    /// recent-history picker (Ctrl-P): last 10 from the shared history
+    hist_open: bool,
+    hist_sel: usize,
+    hist_items: Vec<(String, String)>,
+    /// last text spoken this session (falls back to shared last-spoken.txt)
+    last_text: Option<String>,
 }
 
 fn ui_loop(
@@ -237,6 +243,10 @@ fn ui_loop(
         settings_sel: 0,
         editing: None,
         tick: 0,
+        hist_open: false,
+        hist_sel: 0,
+        hist_items: Vec::new(),
+        last_text: crate::config::last_spoken(),
     };
     // hold-to-scrub detection (same scheme as one-shot mode)
     let mut last_arrow: Option<(KeyCode, Instant)> = None;
@@ -288,6 +298,36 @@ fn ui_loop(
             continue;
         }
 
+        // recent-history picker (parity with the tray app's Recent menu)
+        if st.hist_open {
+            match key.code {
+                KeyCode::Esc | KeyCode::Tab => st.hist_open = false,
+                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    st.hist_open = false
+                }
+                KeyCode::Up => st.hist_sel = st.hist_sel.saturating_sub(1),
+                KeyCode::Down => {
+                    st.hist_sel = (st.hist_sel + 1).min(st.hist_items.len().saturating_sub(1))
+                }
+                KeyCode::Enter => {
+                    if let Some((_, text)) = st.hist_items.get(st.hist_sel) {
+                        st.last_text = Some(text.clone());
+                        tx.send(Job {
+                            text: text.clone(),
+                            voice: cfg.voice.clone(),
+                            speed: cfg.speed,
+                            save_dir: cfg.save_audio.then(|| cfg.audio_dir_path()),
+                        })
+                        .ok();
+                        st.scroll_up = 0;
+                    }
+                    st.hist_open = false;
+                }
+                _ => {}
+            }
+            continue;
+        }
+
         match key.code {
             KeyCode::Tab => st.settings_open = true,
             KeyCode::Enter => {
@@ -298,6 +338,8 @@ fn ui_loop(
                 }
                 let text = parts.join("\n\n").trim().to_string();
                 if !text.is_empty() {
+                    st.last_text = Some(text.clone());
+                    crate::config::log_history("tui", &text);
                     tx.send(Job {
                         text,
                         voice: cfg.voice.clone(),
@@ -308,6 +350,24 @@ fn ui_loop(
                     st.input.clear();
                     st.scroll_up = 0;
                 }
+            }
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // repeat last spoken (this session, else the shared last-spoken)
+                if let Some(text) = st.last_text.clone().or_else(crate::config::last_spoken) {
+                    tx.send(Job {
+                        text,
+                        voice: cfg.voice.clone(),
+                        speed: cfg.speed,
+                        save_dir: cfg.save_audio.then(|| cfg.audio_dir_path()),
+                    })
+                    .ok();
+                    st.scroll_up = 0;
+                }
+            }
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                st.hist_items = crate::config::recent_history(10);
+                st.hist_sel = 0;
+                st.hist_open = !st.hist_items.is_empty();
             }
             KeyCode::Backspace => {
                 // backspace on an empty input removes the last paste chip
@@ -500,7 +560,7 @@ fn draw(
             cfg.voice
         )),
         Span::styled(
-            "tab settings · esc stop · space pause · ←/→ skip · ↑/↓ speed · ^C quit",
+            "tab settings · ^R repeat · ^P recent · esc stop · space pause · ←/→ skip · ↑/↓ speed · ^C quit",
             Style::default().fg(Color::DarkGray),
         ),
     ]);
@@ -518,6 +578,44 @@ fn draw(
     let input = Paragraph::new(Line::from(spans))
         .block(Block::default().borders(Borders::ALL).title(" vox "));
     f.render_widget(input, input_area);
+
+    // ---- recent-history popup (Ctrl-P) ----
+    if st.hist_open {
+        let w = f.area().width.saturating_sub(8).min(72).max(30);
+        let h = (st.hist_items.len() as u16 + 4).min(f.area().height.saturating_sub(2));
+        let area = Rect::new(
+            (f.area().width - w) / 2,
+            (f.area().height.saturating_sub(h)) / 3,
+            w,
+            h,
+        );
+        f.render_widget(Clear, area);
+        let mut lines: Vec<Line> = Vec::new();
+        let text_w = w.saturating_sub(14) as usize;
+        for (i, (source, text)) in st.hist_items.iter().enumerate() {
+            let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            let mut shown: String = one_line.chars().take(text_w).collect();
+            if one_line.chars().count() > text_w {
+                shown.push('…');
+            }
+            let style = if i == st.hist_sel {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else {
+                Style::default()
+            };
+            lines.push(Line::styled(format!(" {source:<8} {shown}"), style));
+        }
+        lines.push(Line::default());
+        lines.push(Line::styled(
+            " ↑/↓ select · enter speak · esc close",
+            Style::default().fg(Color::DarkGray),
+        ));
+        f.render_widget(
+            Paragraph::new(Text::from(lines))
+                .block(Block::default().borders(Borders::ALL).title(" recent ")),
+            area,
+        );
+    }
 
     // ---- settings popup ----
     if st.settings_open {

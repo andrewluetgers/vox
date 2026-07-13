@@ -8,8 +8,10 @@ other processes can speak through one place.
 ## What it does
 
 - **Tray menu**: toggle "Speak Claude replies" (flips `enabled` in
-  state.json, so it mutes the Claude Stop hook), stop speaking, speak
-  clipboard, speed presets, panel window, quit.
+  state.json, so it mutes the Claude Stop hook), stop speaking, **Repeat
+  last**, a **Recent** submenu of the last 10 spoken items (click to
+  replay; refreshes as the hook/TUI/panel speak), speak clipboard, speed
+  presets, panel window, quit. Parity twin: the TUI's Ctrl-R / Ctrl-P.
 - **Panel window** (Open vox… in the tray): three tabs —
   - **Speak**: text box (⌘↩ speaks, Esc stops), speak-clipboard button.
   - **History**: the last 100 readouts from every source (Claude hook,

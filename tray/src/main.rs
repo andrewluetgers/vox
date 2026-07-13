@@ -25,8 +25,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 use tauri::image::Image;
-use tauri::menu::{CheckMenuItem, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
-use tauri::tray::TrayIconBuilder;
+use tauri::menu::{
+    CheckMenuItem, Menu, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
+};
+use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{AppHandle, Manager, Wry};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
@@ -47,7 +49,12 @@ const VOICES: &[&str] = &[
 ];
 
 static CURRENT: Mutex<Option<Child>> = Mutex::new(None);
-static ENABLED_ITEM: OnceLock<CheckMenuItem<Wry>> = OnceLock::new();
+// The tray menu is rebuilt whenever history/state change, so the checkbox
+// handle is replaced rather than set once.
+static ENABLED_ITEM: Mutex<Option<CheckMenuItem<Wry>>> = Mutex::new(None);
+/// Texts behind the Recent submenu items, index-matched to ids "hist-N".
+static RECENT: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static TRAY: OnceLock<TrayIcon<Wry>> = OnceLock::new();
 
 fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").expect("HOME not set"))
@@ -347,7 +354,7 @@ fn replay_last() {
 
 fn set_readouts_enabled(enabled: bool) {
     apply_patch(&json!({"enabled": enabled}));
-    if let Some(item) = ENABLED_ITEM.get() {
+    if let Some(item) = ENABLED_ITEM.lock().unwrap().as_ref() {
         let _ = item.set_checked(enabled);
     }
 }
@@ -436,7 +443,7 @@ fn handle_cmd(app: &AppHandle, line: &str) -> String {
         Some("set") => {
             apply_patch(&v);
             let errors = register_shortcuts(app);
-            if let Some(item) = ENABLED_ITEM.get() {
+            if let Some(item) = ENABLED_ITEM.lock().unwrap().as_ref() {
                 let _ = item.set_checked(effective_state()["enabled"].as_bool().unwrap_or(true));
             }
             json!({"ok": true, "shortcut_errors": errors}).to_string()
@@ -536,6 +543,105 @@ fn tray_image() -> Image<'static> {
     Image::new_owned(rgba, W as u32, H as u32)
 }
 
+/// One-line menu label for a history entry.
+fn menu_label(text: &str) -> String {
+    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut label: String = one_line.chars().take(48).collect();
+    if one_line.chars().count() > 48 {
+        label.push('…');
+    }
+    label
+}
+
+/// Build the full tray menu, including the Recent submenu (last 10 shared
+/// history entries). Called at startup and whenever history/state change;
+/// refreshes ENABLED_ITEM and RECENT for the event handler.
+fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
+    let enabled = CheckMenuItem::with_id(
+        app,
+        "enabled",
+        "Speak Claude replies",
+        true,
+        effective_state()["enabled"].as_bool().unwrap_or(true),
+        None::<&str>,
+    )?;
+    *ENABLED_ITEM.lock().unwrap() = Some(enabled.clone());
+
+    let stop_item = MenuItemBuilder::with_id("stop", "Stop speaking").build(app)?;
+    let clip_item = MenuItemBuilder::with_id("clipboard", "Speak clipboard").build(app)?;
+    let repeat_item = MenuItemBuilder::with_id("repeat", "Repeat last").build(app)?;
+
+    // Recent submenu: parity with the TUI's Ctrl-P picker.
+    let recent = fs::read_to_string(history_path())
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter_map(|v| v["text"].as_str().map(String::from))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .take(10)
+        .collect::<Vec<_>>();
+    let mut recent_menu = SubmenuBuilder::new(app, "Recent");
+    if recent.is_empty() {
+        recent_menu = recent_menu.item(
+            &MenuItemBuilder::with_id("hist-none", "Nothing spoken yet")
+                .enabled(false)
+                .build(app)?,
+        );
+    } else {
+        for (i, text) in recent.iter().enumerate() {
+            recent_menu = recent_menu
+                .item(&MenuItemBuilder::with_id(format!("hist-{i}"), menu_label(text)).build(app)?);
+        }
+    }
+    let recent_menu = recent_menu.build()?;
+    *RECENT.lock().unwrap() = recent;
+
+    let mut speed_menu = SubmenuBuilder::new(app, "Speed");
+    for s in ["0.8", "1.0", "1.1", "1.25", "1.5", "2.0"] {
+        speed_menu = speed_menu
+            .item(&MenuItemBuilder::with_id(format!("speed-{s}"), format!("{s}x")).build(app)?);
+    }
+    let speed_menu = speed_menu.build()?;
+    let panel_item = MenuItemBuilder::with_id("panel", "Open vox…").build(app)?;
+    let quit = PredefinedMenuItem::quit(app, None)?;
+    MenuBuilder::new(app)
+        .item(&enabled)
+        .item(&stop_item)
+        .item(&repeat_item)
+        .item(&recent_menu)
+        .item(&clip_item)
+        .item(&speed_menu)
+        .separator()
+        .item(&panel_item)
+        .separator()
+        .item(&quit)
+        .build()
+}
+
+/// Rebuild the tray menu when history or state change on disk, so Recent and
+/// the enabled checkbox track edits from the hook, skill, TUI, and panel.
+fn start_menu_refresher(app: AppHandle) {
+    std::thread::spawn(move || {
+        let mtime = |p: PathBuf| fs::metadata(p).and_then(|m| m.modified()).ok();
+        let mut last = (mtime(history_path()), mtime(state_path()));
+        loop {
+            std::thread::sleep(Duration::from_secs(3));
+            let cur = (mtime(history_path()), mtime(state_path()));
+            if cur != last {
+                last = cur;
+                let app2 = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    if let (Some(tray), Ok(menu)) = (TRAY.get(), build_menu(&app2)) {
+                        let _ = tray.set_menu(Some(menu));
+                    }
+                });
+            }
+        }
+    });
+}
+
 fn open_panel(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("panel") {
         let _ = w.show();
@@ -558,6 +664,13 @@ fn speak(text: String) {
 #[tauri::command]
 fn stop() {
     stop_speaking();
+}
+
+/// Speak without logging to history — used by History-tab Replay so
+/// replays don't duplicate entries.
+#[tauri::command]
+fn replay(text: String) {
+    spawn_vox(&[&speakable(&text)], None);
 }
 
 #[tauri::command]
@@ -585,7 +698,7 @@ fn get_settings() -> Value {
 fn save_settings(app: AppHandle, patch: Value) -> Value {
     apply_patch(&patch);
     let errors = register_shortcuts(&app);
-    if let Some(item) = ENABLED_ITEM.get() {
+    if let Some(item) = ENABLED_ITEM.lock().unwrap().as_ref() {
         let _ = item.set_checked(effective_state()["enabled"].as_bool().unwrap_or(true));
     }
     json!({"ok": true, "shortcut_errors": errors})
@@ -736,6 +849,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             speak,
             stop,
+            replay,
             status,
             get_settings,
             save_settings,
@@ -779,50 +893,34 @@ fn main() {
                 eprintln!("vox-tray: shortcut registration: {e}");
             }
 
-            let enabled = CheckMenuItem::with_id(
-                app,
-                "enabled",
-                "Speak Claude replies",
-                true,
-                effective_state()["enabled"].as_bool().unwrap_or(true),
-                None::<&str>,
-            )?;
-            let _ = ENABLED_ITEM.set(enabled.clone());
-            let stop_item = MenuItemBuilder::with_id("stop", "Stop speaking").build(app)?;
-            let clip_item = MenuItemBuilder::with_id("clipboard", "Speak clipboard").build(app)?;
-            let mut speed_menu = SubmenuBuilder::new(app, "Speed");
-            for s in ["0.8", "1.0", "1.1", "1.25", "1.5", "2.0"] {
-                speed_menu = speed_menu
-                    .item(&MenuItemBuilder::with_id(format!("speed-{s}"), format!("{s}x")).build(app)?);
-            }
-            let speed_menu = speed_menu.build()?;
-            let panel_item = MenuItemBuilder::with_id("panel", "Open vox…").build(app)?;
-            let quit = PredefinedMenuItem::quit(app, None)?;
-            let menu = MenuBuilder::new(app)
-                .item(&enabled)
-                .item(&stop_item)
-                .item(&clip_item)
-                .item(&speed_menu)
-                .separator()
-                .item(&panel_item)
-                .separator()
-                .item(&quit)
-                .build()?;
-
-            let enabled_handle = enabled.clone();
-            TrayIconBuilder::with_id("vox")
+            let menu = build_menu(app.handle())?;
+            let tray = TrayIconBuilder::with_id("vox")
                 .icon(tray_image())
                 .icon_as_template(true)
                 .menu(&menu)
                 .show_menu_on_left_click(true)
-                .on_menu_event(move |app, event| match event.id().as_ref() {
+                .on_menu_event(|app, event| match event.id().as_ref() {
                     "enabled" => {
-                        let checked = enabled_handle.is_checked().unwrap_or(true);
+                        let checked = ENABLED_ITEM
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .and_then(|i| i.is_checked().ok())
+                            .unwrap_or(true);
                         apply_patch(&json!({"enabled": checked}));
                     }
                     "stop" => stop_speaking(),
                     "clipboard" => speak_clipboard(),
+                    "repeat" => replay_last(),
                     "panel" => open_panel(app),
+                    id if id.starts_with("hist-") => {
+                        if let Ok(i) = id["hist-".len()..].parse::<usize>() {
+                            let text = RECENT.lock().unwrap().get(i).cloned();
+                            if let Some(text) = text {
+                                spawn_vox(&[&speakable(&text)], None);
+                            }
+                        }
+                    }
                     id if id.starts_with("speed-") => {
                         if let Ok(speed) = id["speed-".len()..].parse::<f64>() {
                             apply_patch(&json!({"speed": speed}));
@@ -831,6 +929,8 @@ fn main() {
                     _ => {}
                 })
                 .build(app)?;
+            let _ = TRAY.set(tray);
+            start_menu_refresher(app.handle().clone());
 
             Ok(())
         })

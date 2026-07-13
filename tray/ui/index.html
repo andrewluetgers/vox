@@ -289,7 +289,7 @@
       const text = document.createElement('div'); text.className = 'text';
       text.textContent = e.text; text.onclick = () => text.classList.toggle('open');
       const btn = document.createElement('button'); btn.className = 'btn';
-      btn.textContent = 'Replay'; btn.onclick = () => invoke('speak', { text: e.text });
+      btn.textContent = 'Replay'; btn.onclick = () => invoke('replay', { text: e.text });
       div.append(meta, text, btn);
       $('#histlist').append(div);
     }

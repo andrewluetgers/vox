@@ -62,6 +62,8 @@ an empty input removes the last chip.
 - **↑/↓** — playback speed (pitch-preserving time stretch — no chipmunk;
   scrubbing stays tape-style on purpose)
 - **Esc** — stop: halts playback, cancels remaining synthesis, drops the queue
+- **Ctrl-R** — repeat the last utterance · **Ctrl-P** — pick from the last 10
+  spoken items (history is shared with the menu-bar app and Claude readouts)
 - **PgUp/PgDn** — scroll history
 - **Tab** — settings: voice, synthesis speed, audio folder, save on/off,
   cleanup-on-exit (delete this session's files when you quit)
@@ -120,8 +122,12 @@ See [claude/README.md](claude/README.md) for how it works.
 ## Menu-bar app (spike)
 
 [`tray/`](tray/) is a Tauri v2 menu-bar companion: tray controls for the
-readouts, a global ⌃⌥⌘V speak-the-clipboard shortcut, and a JSON socket at
-`~/.claude/vox/vox.sock`. See [tray/README.md](tray/README.md).
+readouts (repeat last, a Recent menu of the last 10 spoken items, speed,
+on/off), configurable global shortcuts (⌃⌥⌘V speaks the clipboard), a panel
+with history and full settings (including per-repo overrides), and a JSON
+socket at `~/.claude/vox/vox.sock`. It stays in feature parity with the
+terminal UI above — same shared history and settings. See
+[tray/README.md](tray/README.md).
 
 ## Defaults via environment
 
