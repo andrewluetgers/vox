@@ -32,7 +32,7 @@ if [ "${1:-}" = "--uninstall" ]; then
       else . end' "$SETTINGS" >"$tmp" && mv "$tmp" "$SETTINGS"
   fi
   rm -rf "$SKILL_DIR"
-  rm -f "$VOX_DIR/vox-speak.sh"
+  rm -f "$VOX_DIR/vox-speak.sh" "$VOX_DIR/md2speech.sh"
   echo "Uninstalled. State and transcripts in $VOX_DIR were kept; delete that dir to remove them."
   exit 0
 fi
@@ -42,7 +42,8 @@ command -v claude >/dev/null 2>&1 || echo "warning: claude CLI not found — lon
 
 mkdir -p "$VOX_DIR" "$SKILL_DIR"
 cp "$HERE/vox-speak.sh" "$VOX_DIR/vox-speak.sh"
-chmod +x "$VOX_DIR/vox-speak.sh"
+cp "$HERE/md2speech.sh" "$VOX_DIR/md2speech.sh"
+chmod +x "$VOX_DIR/vox-speak.sh" "$VOX_DIR/md2speech.sh"
 cp "$HERE/skills/vox/SKILL.md" "$SKILL_DIR/SKILL.md"
 [ -f "$VOX_DIR/state.json" ] || printf '{"enabled": true, "voice": "bm_george", "speed": 1.1, "verbatim_max": 300}\n' >"$VOX_DIR/state.json"
 

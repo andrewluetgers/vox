@@ -206,7 +206,8 @@
       const div = document.createElement('div');
       div.className = 'hentry';
       const meta = document.createElement('div'); meta.className = 'meta';
-      meta.innerHTML = `${ago(e.ts)}<br><span class="src">${e.source || '?'}</span>`;
+      meta.innerHTML = `${ago(e.ts)}<br><span class="src">${e.source || '?'}</span>` +
+        (e.project ? `<br><span class="src">${e.project}</span>` : '');
       const text = document.createElement('div'); text.className = 'text';
       text.textContent = e.text; text.onclick = () => text.classList.toggle('open');
       const btn = document.createElement('button'); btn.className = 'btn';

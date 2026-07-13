@@ -76,9 +76,10 @@ touch ~/.claude/vox/skip-next && vox --stop && vox --no-save -v "$(jq -r .voice 
 ```
 
 **full / read the whole thing** — read the original unsummarized response
-(background; can be long):
+(background; can be long). Pipe through md2speech.sh so markdown becomes
+speakable (no spoken asterisks or hashes; structure becomes pauses):
 ```sh
-touch ~/.claude/vox/skip-next && vox --stop && vox --no-save -v "$(jq -r .voice ~/.claude/vox/state.json)" -s "$(jq -r .speed ~/.claude/vox/state.json)" -f ~/.claude/vox/last-full.txt
+touch ~/.claude/vox/skip-next && vox --stop && ~/.claude/vox/md2speech.sh < ~/.claude/vox/last-full.txt | vox --no-save -v "$(jq -r .voice ~/.claude/vox/state.json)" -s "$(jq -r .speed ~/.claude/vox/state.json)"
 ```
 
 **slower / faster** — step speed by 0.15 (clamp to 0.5–2.0). Applies from the

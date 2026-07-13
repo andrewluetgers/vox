@@ -103,8 +103,17 @@ SPEED=$(cfg speed 1.1)
 VERBATIM_MAX=$(cfg verbatim_max 300)
 PROMPT=$(cfg summary_prompt "$DEFAULT_PROMPT")
 
+# Markdown -> speakable text: strip formatting, turn structure into pauses.
+speakable() {
+  if [ -x "$VOX_DIR/md2speech.sh" ]; then
+    "$VOX_DIR/md2speech.sh"
+  else
+    sed 's/[*_#`]//g'
+  fi
+}
+
 if [ "${#TEXT}" -le "$VERBATIM_MAX" ]; then
-  SPOKEN=$(printf '%s' "$TEXT" | sed 's/[*_#`]//g')
+  SPOKEN=$(printf '%s' "$TEXT" | speakable)
 else
   # The prompt goes in --system-prompt (replacing the agentic Claude Code one)
   # and --disallowedTools keeps the summarizer from wandering off to read the
@@ -112,8 +121,8 @@ else
   # subscription login (a stray key takes precedence and may lack credits).
   SPOKEN=$(printf '%s' "$TEXT" | env -u ANTHROPIC_API_KEY -u ANTHROPIC_PROVIDER_API_KEY \
     claude -p --model haiku --no-session-persistence --disallowedTools "*" \
-    --system-prompt "$PROMPT" 2>/dev/null)
-  [ -n "$SPOKEN" ] || SPOKEN="$(printf '%s' "$TEXT" | sed 's/[*_#`]//g' | head -c "$VERBATIM_MAX")"
+    --system-prompt "$PROMPT" 2>/dev/null | speakable)
+  [ -n "$SPOKEN" ] || SPOKEN="$(printf '%s' "$TEXT" | speakable | head -c "$VERBATIM_MAX")"
   # Runaway guard: a spoken update should never be a wall of text.
   if [ "${#SPOKEN}" -gt 900 ]; then
     SPOKEN="$(printf '%s' "$SPOKEN" | head -c 900). Summary ran long, cut off here."
@@ -121,8 +130,11 @@ else
 fi
 
 printf '%s' "$SPOKEN" >"$VOX_DIR/last-spoken.txt"
-jq -nc --arg ts "$(date +%s)" --arg text "$SPOKEN" \
-  '{ts: ($ts | tonumber), source: "claude", text: $text}' >>"$VOX_DIR/history.jsonl"
+# The hook runs with cwd = the Claude session's project, so history can say
+# which repo was talking.
+PROJECT=$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")
+jq -nc --arg ts "$(date +%s)" --arg text "$SPOKEN" --arg project "$PROJECT" \
+  '{ts: ($ts | tonumber), source: "claude", project: $project, text: $text}' >>"$VOX_DIR/history.jsonl"
 
 # Audio saving: off by default so readouts don't accumulate on disk.
 SAVE_ARGS=()

@@ -216,6 +216,32 @@ fn spawn_vox(extra: &[&str], voice_override: Option<&str>) {
     }
 }
 
+/// Markdown -> speakable text via the shared md2speech.sh filter (formatting
+/// markers vanish, structure becomes pauses). Falls back to the raw text.
+fn speakable(text: &str) -> String {
+    let script = vox_dir().join("md2speech.sh");
+    if script.exists() {
+        let child = Command::new("/bin/bash")
+            .arg(&script)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn();
+        if let Ok(mut child) = child {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            if let Ok(out) = child.wait_with_output() {
+                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !s.is_empty() {
+                    return s;
+                }
+            }
+        }
+    }
+    text.to_string()
+}
+
 fn add_history(source: &str, text: &str) {
     let entry = json!({"ts": now_secs(), "source": source, "text": text});
     let path = history_path();
@@ -235,7 +261,7 @@ fn speak_text(text: &str, source: &str) {
         return;
     }
     add_history(source, text);
-    spawn_vox(&[text], None);
+    spawn_vox(&[&speakable(text)], None);
 }
 
 fn clipboard_text() -> Option<String> {
