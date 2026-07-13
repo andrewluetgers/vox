@@ -90,8 +90,10 @@ fn synth_worker(
                 done: false,
             });
         }
+        let mut was_cancelled = false;
         for sentence in sentences(&job.text) {
             if cancel.load(Ordering::SeqCst) {
+                was_cancelled = true;
                 break;
             }
             let audio = match tts.tts_raw_audio(
@@ -126,6 +128,10 @@ fn synth_worker(
                 });
             }
             utt.end = sent_start + sent_len;
+        }
+        if was_cancelled || cancel.load(Ordering::SeqCst) {
+            // Esc means stop everything: drop any queued submissions too
+            while rx.try_recv().is_ok() {}
         }
         let mut sh = shared.lock().unwrap();
         sh.synthesizing = false;
@@ -173,6 +179,8 @@ pub async fn run(tts: TTSKoko, mut cfg: Config) -> Result<()> {
     }
 
     let mut terminal = ratatui::init();
+    // deliver pastes as a single Event::Paste instead of a flood of key events
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
     let res = ui_loop(
         &mut terminal,
         &sink,
@@ -182,6 +190,7 @@ pub async fn run(tts: TTSKoko, mut cfg: Config) -> Result<()> {
         &tx,
         &mut cfg,
     );
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
     ratatui::restore();
     sink.stop();
 
@@ -202,6 +211,8 @@ pub async fn run(tts: TTSKoko, mut cfg: Config) -> Result<()> {
 
 struct UiState {
     input: String,
+    /// pasted blocks, shown as collapsed chips instead of filling the input
+    pastes: Vec<String>,
     scroll_up: u16,
     settings_open: bool,
     settings_sel: usize,
@@ -220,6 +231,7 @@ fn ui_loop(
 ) -> Result<()> {
     let mut st = UiState {
         input: String::new(),
+        pastes: Vec::new(),
         scroll_up: 0,
         settings_open: false,
         settings_sel: 0,
@@ -229,19 +241,38 @@ fn ui_loop(
     // hold-to-scrub detection (same scheme as one-shot mode)
     let mut last_arrow: Option<(KeyCode, Instant)> = None;
     let mut scrub_deadline = Instant::now();
+    // Esc pressed: keep pinning the cursor to the end until the synthesis
+    // worker has actually stopped appending, otherwise freshly generated
+    // audio lands beyond the cursor and playback resumes into it.
+    let mut stopping = false;
 
     loop {
         st.tick = st.tick.wrapping_add(1);
         if player.scrubbing() != 0 && Instant::now() > scrub_deadline {
             player.set_scrub(0);
         }
+        if stopping {
+            player.jump_to_end();
+            if !shared.lock().unwrap().synthesizing {
+                stopping = false;
+            }
+        }
         terminal.draw(|f| draw(f, &st, sink, player, shared, cfg))?;
 
         if !event::poll(Duration::from_millis(50))? {
             continue;
         }
-        let Event::Key(key) = event::read()? else {
-            continue;
+        let key = match event::read()? {
+            Event::Key(key) => key,
+            Event::Paste(s) => {
+                if let Some(buf) = &mut st.editing {
+                    buf.push_str(s.trim());
+                } else if !s.trim().is_empty() {
+                    st.pastes.push(s);
+                }
+                continue;
+            }
+            _ => continue,
         };
         if key.kind == KeyEventKind::Release {
             continue;
@@ -260,7 +291,12 @@ fn ui_loop(
         match key.code {
             KeyCode::Tab => st.settings_open = true,
             KeyCode::Enter => {
-                let text = st.input.trim().to_string();
+                let mut parts: Vec<String> = st.pastes.drain(..).collect();
+                let typed = st.input.trim().to_string();
+                if !typed.is_empty() {
+                    parts.push(typed);
+                }
+                let text = parts.join("\n\n").trim().to_string();
                 if !text.is_empty() {
                     tx.send(Job {
                         text,
@@ -274,7 +310,10 @@ fn ui_loop(
                 }
             }
             KeyCode::Backspace => {
-                st.input.pop();
+                // backspace on an empty input removes the last paste chip
+                if st.input.pop().is_none() {
+                    st.pastes.pop();
+                }
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 st.input.clear();
@@ -283,6 +322,7 @@ fn ui_loop(
                 // stop current speech and clear anything queued
                 cancel.store(true, Ordering::SeqCst);
                 player.jump_to_end();
+                stopping = true;
             }
             KeyCode::Char(' ') if st.input.is_empty() => {
                 if sink.is_paused() {
@@ -291,7 +331,7 @@ fn ui_loop(
                     sink.pause();
                 }
             }
-            code @ (KeyCode::Left | KeyCode::Right) if st.input.is_empty() => {
+            code @ (KeyCode::Left | KeyCode::Right) => {
                 let dir: i8 = if code == KeyCode::Left { -1 } else { 1 };
                 let now = Instant::now();
                 let holding = key.kind == KeyEventKind::Repeat
@@ -467,7 +507,15 @@ fn draw(
     f.render_widget(Paragraph::new(status), status_area);
 
     // ---- input box ----
-    let input = Paragraph::new(format!("{}▌", st.input))
+    let mut spans: Vec<Span> = Vec::new();
+    for (i, p) in st.pastes.iter().enumerate() {
+        spans.push(Span::styled(
+            format!("[pasted #{} · {} chars] ", i + 1, p.chars().count()),
+            Style::default().fg(Color::Cyan),
+        ));
+    }
+    spans.push(Span::raw(format!("{}▌", st.input)));
+    let input = Paragraph::new(Line::from(spans))
         .block(Block::default().borders(Borders::ALL).title(" vox "));
     f.render_widget(input, input_area);
 

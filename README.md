@@ -53,10 +53,16 @@ line, and an input box at the bottom. Type text, press Enter, and it
 speaks — the submitted text appears dimmed and each word brightens to
 white as it's spoken, so the transcript doubles as a progress indicator.
 
-- **Enter** — speak the typed text (new submissions queue up)
-- **space** (input empty) — pause/resume · **←/→** (input empty) — skip,
-  hold to scrub · **↑/↓** — playback speed
-- **Esc** — stop the current read · **PgUp/PgDn** — scroll history
+Pasted text collapses to a chip (`[pasted #1 · 843 chars]`) instead of
+filling the input; Enter speaks pastes plus anything typed, Backspace on
+an empty input removes the last chip.
+
+- **Enter** — speak the input (new submissions queue up)
+- **space** (input empty) — pause/resume · **←/→** — skip, hold to scrub
+- **↑/↓** — playback speed (pitch-preserving time stretch — no chipmunk;
+  scrubbing stays tape-style on purpose)
+- **Esc** — stop: halts playback, cancels remaining synthesis, drops the queue
+- **PgUp/PgDn** — scroll history
 - **Tab** — settings: voice, synthesis speed, audio folder, save on/off,
   cleanup-on-exit (delete this session's files when you quit)
 - **Ctrl-C** — quit
