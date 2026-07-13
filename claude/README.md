@@ -70,7 +70,12 @@ Uninstall with `./claude/install.sh --uninstall`.
   state.json key for that repo — e.g. `{"voice": "bf_emma"}` to give a
   project its own voice, `{"summary_prompt": "..."}` for a custom readout
   style, or `{"enabled": false}` to silence a noisy project. The hook finds
-  it by walking up from its working directory.
+  it by walking up from its working directory, registers every repo it
+  speaks from in `~/.claude/vox/projects.json`, and the vox-tray Settings
+  tab offers a scope picker (Global / each known repo) that edits these
+  files with per-key override indicators. The vox CLI and TUI honor the
+  same file for voice/speed. Disabling an override renames the file to
+  `.vox.json.disabled`.
 
 One subtlety: after a vox command like "repeat that", Claude's own
 confirmation would trigger a fresh readout that talks over the replay. The

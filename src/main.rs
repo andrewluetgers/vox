@@ -40,12 +40,12 @@ struct Args {
     /// Read text from the clipboard
     #[arg(short, long)]
     clip: bool,
-    /// Voice (see --list-voices)
-    #[arg(short, long, env = "VOX_VOICE", default_value = "bm_george")]
-    voice: String,
-    /// Speech speed
-    #[arg(short, long, env = "VOX_SPEED", default_value_t = 1.0)]
-    speed: f32,
+    /// Voice (see --list-voices) [default: bm_george, or .vox.json]
+    #[arg(short, long, env = "VOX_VOICE")]
+    voice: Option<String>,
+    /// Speech speed [default: 1.0, or .vox.json]
+    #[arg(short, long, env = "VOX_SPEED")]
+    speed: Option<f32>,
     /// Write audio to this wav file
     #[arg(short, long)]
     out: Option<PathBuf>,
@@ -418,6 +418,10 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Per-repo settings: flag/env wins, then the nearest .vox.json, then the
+    // built-in default (CLI) or config.toml (TUI).
+    let proj = config::project_overrides();
+
     if args.ui
         || (args.text.is_none() && args.file.is_none() && !args.clip && atty_stdin())
     {
@@ -426,12 +430,42 @@ async fn main() -> Result<()> {
             voices_path.to_str().context("bad voices path")?,
         )
         .await;
-        return tui::run(tts, config::Config::load()).await;
+        let mut cfg = config::Config::load();
+        if let Some(p) = &proj {
+            if let Some(v) = p["voice"].as_str() {
+                if VOICE_NAMES.contains(&v) {
+                    cfg.voice = v.into();
+                }
+            }
+            if let Some(s) = p["speed"].as_f64() {
+                cfg.speed = s as f32;
+            }
+            if let Some(b) = p["save_audio"].as_bool() {
+                cfg.save_audio = b;
+            }
+            if let Some(d) = p["audio_dir"].as_str() {
+                cfg.audio_dir = d.into();
+            }
+        }
+        return tui::run(tts, cfg).await;
     }
 
+    let voice = args
+        .voice
+        .clone()
+        .or_else(|| {
+            proj.as_ref()
+                .and_then(|p| p["voice"].as_str().map(String::from))
+        })
+        .unwrap_or_else(|| "bm_george".into());
+    let speed = args
+        .speed
+        .or_else(|| proj.as_ref().and_then(|p| p["speed"].as_f64().map(|s| s as f32)))
+        .unwrap_or(1.0);
+
     let text = apply_lexicon(&read_text(&args)?, &load_lexicon());
-    if !VOICE_NAMES.contains(&args.voice.as_str()) {
-        bail!("unknown voice '{}' (try --list-voices)", args.voice);
+    if !VOICE_NAMES.contains(&voice.as_str()) {
+        bail!("unknown voice '{}' (try --list-voices)", voice);
     }
 
     let t0 = Instant::now();
@@ -469,9 +503,9 @@ async fn main() -> Result<()> {
     let mut first_audio: Option<f32> = None;
     let synth_result = tts.tts_raw_audio_streaming(
         &text,
-        lang_for(&args.voice),
-        &args.voice,
-        args.speed,
+        lang_for(&voice),
+        &voice,
+        speed,
         None,
         None,
         None,

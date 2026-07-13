@@ -619,6 +619,100 @@ fn clear_history() {
     let _ = fs::remove_file(history_path());
 }
 
+// --- per-project overrides ------------------------------------------------
+//
+// The Claude hook registers every repo it speaks from in projects.json.
+// A repo's overrides live in <repo>/.vox.json; disabling the override
+// renames it to .vox.json.disabled so the hook stops finding it.
+
+fn projects_path() -> PathBuf {
+    vox_dir().join("projects.json")
+}
+
+fn override_files(root: &str) -> (PathBuf, PathBuf) {
+    let root = PathBuf::from(root);
+    (root.join(".vox.json"), root.join(".vox.json.disabled"))
+}
+
+#[tauri::command]
+fn list_projects() -> Value {
+    let reg: Value = fs::read_to_string(projects_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| json!({}));
+    let mut list: Vec<Value> = Vec::new();
+    if let Some(m) = reg.as_object() {
+        for (path, meta) in m {
+            let (on, off) = override_files(path);
+            let disabled = off.exists() && !on.exists();
+            let file = if disabled { &off } else { &on };
+            let overrides: Value = fs::read_to_string(file)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_else(|| json!({}));
+            list.push(json!({
+                "path": path,
+                "name": PathBuf::from(path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.clone()),
+                "last_seen": meta["last_seen"],
+                "has_override": on.exists() || off.exists(),
+                "override_disabled": disabled,
+                "overrides": overrides,
+            }));
+        }
+    }
+    list.sort_by_key(|p| std::cmp::Reverse(p["last_seen"].as_u64().unwrap_or(0)));
+    json!(list)
+}
+
+/// Merge a patch into a repo's .vox.json. Null values clear keys; an emptied
+/// file is deleted (no override left behind).
+#[tauri::command]
+fn save_project_settings(path: String, patch: Value) -> Value {
+    let (on, off) = override_files(&path);
+    let target = if off.exists() && !on.exists() { off } else { on };
+    let mut cur: Value = fs::read_to_string(&target)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| json!({}));
+    if let (Some(obj), Some(p)) = (cur.as_object_mut(), patch.as_object()) {
+        for (k, v) in p {
+            if v.is_null() {
+                obj.remove(k);
+            } else {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    if cur.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+        let _ = fs::remove_file(&target);
+    } else if let Ok(s) = serde_json::to_string_pretty(&cur) {
+        let _ = fs::write(&target, s + "\n");
+    }
+    json!({"ok": true})
+}
+
+#[tauri::command]
+fn set_project_override_enabled(path: String, enabled: bool) {
+    let (on, off) = override_files(&path);
+    if enabled {
+        if off.exists() && !on.exists() {
+            let _ = fs::rename(&off, &on);
+        }
+    } else if on.exists() {
+        let _ = fs::rename(&on, &off);
+    }
+}
+
+#[tauri::command]
+fn delete_project_override(path: String) {
+    let (on, off) = override_files(&path);
+    let _ = fs::remove_file(on);
+    let _ = fs::remove_file(off);
+}
+
 /// Open the markdown-to-speech rules script in the default text editor.
 /// It's a deterministic filter (awk), not a prompt — edits apply to the
 /// next utterance, no restart needed.
@@ -649,7 +743,11 @@ fn main() {
             get_history,
             clear_history,
             open_audio_dir,
-            open_md_filter
+            open_md_filter,
+            list_projects,
+            save_project_settings,
+            set_project_override_enabled,
+            delete_project_override
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]

@@ -55,6 +55,15 @@ while [ "$d" != "/" ] && [ -n "$d" ]; do
   d=$(dirname "$d")
 done
 
+# Register this repo in the global registry so the vox-tray settings picker
+# can offer per-repo overrides for every project the hook has spoken from.
+# Registered before the enabled check so silenced repos stay visible.
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+REG="$VOX_DIR/projects.json"
+[ -f "$REG" ] || echo '{}' >"$REG"
+jq --arg p "$ROOT" --arg ts "$(date +%s)" '.[$p] = {last_seen: ($ts | tonumber)}' "$REG" \
+  >"$REG.tmp" 2>/dev/null && mv "$REG.tmp" "$REG"
+
 # cfg <key> <default>: project file wins, then global state, then default.
 # `has()` (not `//`) so an explicit false survives the lookup.
 cfg() {
@@ -137,7 +146,7 @@ printf '%s' "$SPOKEN" >"$VOX_DIR/last-spoken.txt"
 if [ "$(cfg save_history true)" = "true" ]; then
   # The hook runs with cwd = the Claude session's project, so history can
   # say which repo was talking.
-  PROJECT=$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")
+  PROJECT=$(basename "$ROOT")
   jq -nc --arg ts "$(date +%s)" --arg text "$SPOKEN" --arg project "$PROJECT" \
     '{ts: ($ts | tonumber), source: "claude", project: $project, text: $text}' >>"$VOX_DIR/history.jsonl"
   TTL=$(cfg history_ttl_minutes 20)

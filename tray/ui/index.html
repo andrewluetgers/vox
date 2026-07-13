@@ -38,9 +38,27 @@
   .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
   .row label:first-child { min-width: 130px; opacity: .8; }
   h3 { margin: 18px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; opacity: .6; }
-  h3:first-child { margin-top: 0; }
   .hint { font-size: 11px; opacity: .55; margin: 2px 0 0; }
   .err { color: #e5534b; font-size: 12px; }
+
+  /* scope picker */
+  #scopebar {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    padding: 10px; margin-bottom: 6px; border-radius: 10px;
+    background: rgba(128,128,128,.08); border: 1px solid rgba(128,128,128,.2);
+  }
+  #scopebar.repo { border-color: #4a7dfc; }
+  #scopebadge { font-size: 11px; opacity: .7; }
+  #scopebadge.off { color: #e5a53b; opacity: 1; }
+
+  /* override indication */
+  .ovr { outline: 2px solid #4a7dfc; outline-offset: 1px; border-radius: 7px; }
+  button.clearovr {
+    font-size: 11px; padding: 2px 8px; border-radius: 6px; cursor: pointer;
+    border: 1px solid #4a7dfc; color: #4a7dfc; background: transparent;
+    display: none;
+  }
+  button.clearovr.show { display: inline-block; }
 
   /* history */
   .hentry {
@@ -99,19 +117,36 @@
 </section>
 
 <section class="tab" id="tab-settings">
+  <div id="scopebar">
+    <label>Scope</label>
+    <select id="scope"><option value="">Global</option></select>
+    <span id="scopebadge"></span>
+    <span style="flex:1"></span>
+    <button class="btn" id="ovr-toggle" style="display:none"></button>
+    <button class="btn" id="ovr-delete" style="display:none">Delete override</button>
+  </div>
+  <p class="hint" id="scopehint" style="display:none">Repo scope: fields with a
+     blue ring are overridden in this repo's <code>.vox.json</code> — everything
+     else follows Global. Change a field to override it; ✕ clears one override.</p>
+
   <h3>Readouts</h3>
-  <div class="row"><label>Speak Claude replies</label><input type="checkbox" id="s-enabled"></div>
+  <div class="row"><label>Speak Claude replies</label><input type="checkbox" id="s-enabled">
+    <button class="clearovr" data-key="enabled">✕ clear</button></div>
   <div class="row">
     <label>Voice</label>
     <select id="s-voice"></select>
+    <button class="clearovr" data-key="voice">✕ clear</button>
     <span class="hint">picking a voice plays a sample</span>
   </div>
   <div class="row"><label>Speed</label>
     <input type="number" id="s-speed" min="0.5" max="3" step="0.05" style="width:80px">
+    <button class="clearovr" data-key="speed">✕ clear</button>
     <button class="btn" id="speedtest">Test</button>
   </div>
   <div class="row"><label>Verbatim under</label>
-    <input type="number" id="s-verbatim" min="0" step="50" style="width:90px"> <span class="hint">chars — shorter replies skip the summarizer</span>
+    <input type="number" id="s-verbatim" min="0" step="50" style="width:90px">
+    <button class="clearovr" data-key="verbatim_max">✕ clear</button>
+    <span class="hint">chars — shorter replies skip the summarizer</span>
   </div>
 
   <h3>Summarizer prompt</h3>
@@ -119,26 +154,29 @@
   <div class="row">
     <button class="btn primary" id="saveprompt">Save prompt</button>
     <button class="btn" id="resetprompt">Reset to default</button>
+    <button class="clearovr" data-key="summary_prompt">✕ clear</button>
     <span class="hint" id="promptstate"></span>
   </div>
 
-  <h3>Shortcuts</h3>
-  <table class="shortcuts">
-    <tr><td>Speak clipboard (again = stop)</td><td><kbd data-action="speak_clipboard"></kbd></td>
-        <td><button class="btn" data-rec="speak_clipboard">Record</button>
-            <button class="btn" data-clear="speak_clipboard">Clear</button></td></tr>
-    <tr><td>Stop speaking</td><td><kbd data-action="stop"></kbd></td>
-        <td><button class="btn" data-rec="stop">Record</button>
-            <button class="btn" data-clear="stop">Clear</button></td></tr>
-    <tr><td>Replay last readout</td><td><kbd data-action="replay_last"></kbd></td>
-        <td><button class="btn" data-rec="replay_last">Record</button>
-            <button class="btn" data-clear="replay_last">Clear</button></td></tr>
-    <tr><td>Toggle Claude readouts</td><td><kbd data-action="toggle_readouts"></kbd></td>
-        <td><button class="btn" data-rec="toggle_readouts">Record</button>
-            <button class="btn" data-clear="toggle_readouts">Clear</button></td></tr>
-  </table>
-  <p class="hint">Click Record, then press the key combo. Esc cancels.</p>
-  <p class="err" id="shortcuterr"></p>
+  <div id="sec-shortcuts">
+    <h3>Shortcuts</h3>
+    <table class="shortcuts">
+      <tr><td>Speak clipboard (again = stop)</td><td><kbd data-action="speak_clipboard"></kbd></td>
+          <td><button class="btn" data-rec="speak_clipboard">Record</button>
+              <button class="btn" data-clear="speak_clipboard">Clear</button></td></tr>
+      <tr><td>Stop speaking</td><td><kbd data-action="stop"></kbd></td>
+          <td><button class="btn" data-rec="stop">Record</button>
+              <button class="btn" data-clear="stop">Clear</button></td></tr>
+      <tr><td>Replay last readout</td><td><kbd data-action="replay_last"></kbd></td>
+          <td><button class="btn" data-rec="replay_last">Record</button>
+              <button class="btn" data-clear="replay_last">Clear</button></td></tr>
+      <tr><td>Toggle Claude readouts</td><td><kbd data-action="toggle_readouts"></kbd></td>
+          <td><button class="btn" data-rec="toggle_readouts">Record</button>
+              <button class="btn" data-clear="toggle_readouts">Clear</button></td></tr>
+    </table>
+    <p class="hint">Click Record, then press the key combo. Esc cancels.</p>
+    <p class="err" id="shortcuterr"></p>
+  </div>
 
   <h3>Text history</h3>
   <p class="hint">Everything spoken is logged as <b>text</b> to
@@ -146,36 +184,41 @@
      replay it. Entries are deleted after the retention window below. The single
      most-recent readout is always kept separately, so "vox, repeat that" works
      even with history off.</p>
-  <div class="row"><label>Keep text history</label><input type="checkbox" id="s-hist"></div>
+  <div class="row"><label>Keep text history</label><input type="checkbox" id="s-hist">
+    <button class="clearovr" data-key="save_history">✕ clear</button></div>
   <div class="row"><label>Delete after</label>
     <input type="number" id="s-histttl" min="0" step="5" style="width:80px">
+    <button class="clearovr" data-key="history_ttl_minutes">✕ clear</button>
     <span class="hint">minutes (0 = keep, capped at 500 entries)</span>
   </div>
 
-  <h3>Markdown handling</h3>
-  <p class="hint">Formatting is spoken as <b>pauses, never syntax</b>: bold and
-     code markers vanish, headers and bullets become their own sentences, code
-     blocks say "code block omitted", links read their text. This is a
-     deterministic script — not a prompt, no AI involved — so it's instant and
-     runs on everything spoken. Edits apply from the next utterance.</p>
-  <div class="row"><button class="btn" id="openfilter">Edit rules (md2speech.sh)</button></div>
+  <div id="sec-md">
+    <h3>Markdown handling</h3>
+    <p class="hint">Formatting is spoken as <b>pauses, never syntax</b>: bold and
+       code markers vanish, headers and bullets become their own sentences, code
+       blocks say "code block omitted", links read their text. This is a
+       deterministic script — not a prompt, no AI involved — so it's instant and
+       runs on everything spoken. Edits apply from the next utterance.</p>
+    <div class="row"><button class="btn" id="openfilter">Edit rules (md2speech.sh)</button></div>
+  </div>
 
   <h3>Audio files</h3>
   <p class="hint">⚠️ Saved audio is <b>uncompressed WAV — roughly 3&nbsp;MB per
      spoken minute</b>. Leaving this on without a delete-after window can use a
      lot of disk. Off by default; applies to the Claude hook and this app (the
      vox CLI's own saving is configured in vox itself).</p>
-  <div class="row"><label>Save readout audio</label><input type="checkbox" id="s-save"></div>
+  <div class="row"><label>Save readout audio</label><input type="checkbox" id="s-save">
+    <button class="clearovr" data-key="save_audio">✕ clear</button></div>
   <div class="row"><label>Folder</label>
     <input type="text" id="s-dir" style="flex:1">
+    <button class="clearovr" data-key="audio_dir">✕ clear</button>
     <button class="btn" id="opendir">Open folder</button>
   </div>
   <div class="row"><label>Delete after</label>
-    <input type="number" id="s-ttl" min="0" step="5" style="width:80px"> <span class="hint">minutes (0 = keep forever)</span>
+    <input type="number" id="s-ttl" min="0" step="5" style="width:80px">
+    <button class="clearovr" data-key="audio_ttl_minutes">✕ clear</button>
+    <span class="hint">minutes (0 = keep forever)</span>
   </div>
-  <p class="hint">Per-project overrides: put a <code>.vox.json</code> in a repo root
-     (e.g. <code>{"voice": "bf_emma", "enabled": false}</code>) to override any of
-     these for Claude readouts in that project.</p>
 </section>
 
 </main>
@@ -183,6 +226,18 @@
   const invoke = window.__TAURI__.core.invoke;
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => [...document.querySelectorAll(s)];
+
+  // key -> control element id
+  const FIELDS = {
+    enabled: 's-enabled', voice: 's-voice', speed: 's-speed',
+    verbatim_max: 's-verbatim', summary_prompt: 's-prompt',
+    save_history: 's-hist', history_ttl_minutes: 's-histttl',
+    save_audio: 's-save', audio_dir: 's-dir', audio_ttl_minutes: 's-ttl',
+  };
+
+  let cfg = null;          // global settings payload
+  let projects = [];       // registry from list_projects
+  let scope = '';          // '' = global, else repo path
 
   // --- tabs ---
   $$('nav button[data-tab]').forEach(b => b.onclick = () => {
@@ -242,66 +297,149 @@
   }
   $('#clearhist').onclick = async () => { await invoke('clear_history'); loadHistory(); };
 
-  // --- settings tab ---
-  let cfg = null;
+  // --- settings: scope handling ---
+  const currentProject = () => projects.find(p => p.path === scope) || null;
+
+  async function loadSettings() {
+    [cfg, projects] = await Promise.all([invoke('get_settings'), invoke('list_projects')]);
+    const sel = $('#scope');
+    const prev = scope;
+    sel.innerHTML = '<option value="">Global</option>';
+    for (const p of projects) {
+      const o = document.createElement('option');
+      o.value = p.path;
+      o.textContent = p.name + (p.has_override ? (p.override_disabled ? ' (override off)' : ' •') : '');
+      o.title = p.path;
+      sel.append(o);
+    }
+    scope = [...sel.options].some(o => o.value === prev) ? prev : '';
+    sel.value = scope;
+    render();
+  }
+
+  function render() {
+    const proj = currentProject();
+    const repo = !!proj;
+    const ovr = repo && !proj.override_disabled ? proj.overrides : {};
+    const stored = repo ? proj.overrides : {};
+
+    $('#scopebar').classList.toggle('repo', repo);
+    $('#scopehint').style.display = repo ? 'block' : 'none';
+    $('#sec-shortcuts').style.display = repo ? 'none' : 'block';
+    $('#sec-md').style.display = repo ? 'none' : 'block';
+
+    // badge + override controls
+    const badge = $('#scopebadge');
+    if (repo) {
+      const n = Object.keys(proj.overrides).length;
+      badge.textContent = proj.override_disabled
+        ? `override OFF (${n} setting${n === 1 ? '' : 's'} inactive)`
+        : n ? `${n} override${n === 1 ? '' : 's'} active` : 'no overrides yet';
+      badge.classList.toggle('off', !!proj.override_disabled);
+      $('#ovr-toggle').style.display = proj.has_override ? 'inline-block' : 'none';
+      $('#ovr-toggle').textContent = proj.override_disabled ? 'Enable override' : 'Disable override';
+      $('#ovr-delete').style.display = proj.has_override ? 'inline-block' : 'none';
+    } else {
+      badge.textContent = 'applies everywhere unless a repo overrides it';
+      badge.classList.remove('off');
+      $('#ovr-toggle').style.display = 'none';
+      $('#ovr-delete').style.display = 'none';
+    }
+
+    // effective values: repo override (when active) else global
+    const s = cfg.settings;
+    const eff = (k) => (repo && k in ovr) ? ovr[k] : s[k];
+
+    // voices dropdown
+    const vsel = $('#s-voice');
+    if (!vsel.options.length) {
+      for (const v of cfg.voices) {
+        const o = document.createElement('option');
+        o.value = v; o.textContent = v;
+        vsel.append(o);
+      }
+    }
+
+    $('#s-enabled').checked = !!eff('enabled');
+    vsel.value = eff('voice');
+    $('#s-speed').value = eff('speed');
+    $('#s-verbatim').value = eff('verbatim_max');
+    $('#s-prompt').value = eff('summary_prompt');
+    $('#promptstate').textContent = repo
+      ? ('summary_prompt' in stored ? 'repo prompt' : 'inherits global')
+      : (cfg.prompt_overridden ? 'custom prompt' : 'default prompt');
+    $('#s-hist').checked = !!eff('save_history');
+    $('#s-histttl').value = eff('history_ttl_minutes');
+    $('#s-save').checked = !!eff('save_audio');
+    $('#s-dir').value = eff('audio_dir');
+    $('#s-ttl').value = eff('audio_ttl_minutes');
+
+    // override rings + per-key clear buttons
+    for (const [key, id] of Object.entries(FIELDS)) {
+      const el = document.getElementById(id);
+      const overridden = repo && key in stored;
+      el.classList.toggle('ovr', overridden);
+      const clr = document.querySelector(`button.clearovr[data-key="${key}"]`);
+      if (clr) clr.classList.toggle('show', overridden);
+    }
+
+    if (!repo) {
+      for (const kbd of $$('kbd[data-action]')) {
+        const accel = s.shortcuts[kbd.dataset.action] || '';
+        kbd.textContent = pretty(accel);
+        kbd.classList.toggle('none', !accel);
+      }
+    }
+  }
+
+  // route a setting change to the active scope
+  async function setKey(key, value) {
+    if (scope) {
+      await invoke('save_project_settings', { path: scope, patch: { [key]: value } });
+    } else {
+      const r = await invoke('save_settings', { patch: { [key]: value } });
+      $('#shortcuterr').textContent = (r.shortcut_errors || []).join(' · ');
+    }
+    await loadSettings(); refreshChip();
+  }
+
+  $$('button.clearovr').forEach(b => b.onclick = () => setKey(b.dataset.key, null));
+  $('#ovr-toggle').onclick = async () => {
+    const p = currentProject();
+    await invoke('set_project_override_enabled', { path: scope, enabled: !!p.override_disabled });
+    loadSettings();
+  };
+  $('#ovr-delete').onclick = async () => {
+    await invoke('delete_project_override', { path: scope });
+    loadSettings();
+  };
+  $('#scope').onchange = () => { scope = $('#scope').value; render(); };
+
+  $('#s-enabled').onchange = () => setKey('enabled', $('#s-enabled').checked);
+  $('#s-voice').onchange = async () => {
+    await setKey('voice', $('#s-voice').value);
+    invoke('preview_voice', { voice: $('#s-voice').value });
+  };
+  $('#s-speed').onchange = () => setKey('speed', +$('#s-speed').value);
+  $('#speedtest').onclick = () => invoke('speak', { text: `This is ${$('#s-speed').value} times normal speed.` });
+  $('#s-verbatim').onchange = () => setKey('verbatim_max', +$('#s-verbatim').value);
+  $('#saveprompt').onclick = () => setKey('summary_prompt', $('#s-prompt').value);
+  $('#resetprompt').onclick = () =>
+    scope ? setKey('summary_prompt', null) : setKey('summary_prompt', cfg.defaults.summary_prompt);
+  $('#s-hist').onchange = () => setKey('save_history', $('#s-hist').checked);
+  $('#s-histttl').onchange = () => setKey('history_ttl_minutes', +$('#s-histttl').value);
+  $('#s-save').onchange = () => setKey('save_audio', $('#s-save').checked);
+  $('#s-dir').onchange = () => setKey('audio_dir', $('#s-dir').value);
+  $('#s-ttl').onchange = () => setKey('audio_ttl_minutes', +$('#s-ttl').value);
+  $('#opendir').onclick = () => invoke('open_audio_dir');
+  $('#openfilter').onclick = () => invoke('open_md_filter');
+
+  // --- shortcuts (global scope only) ---
   const symbols = { ctrl: '⌃', alt: '⌥', shift: '⇧', super: '⌘' };
   const pretty = (accel) => accel
     ? accel.split('+').map(p => symbols[p] || p.toUpperCase()).join('')
     : 'none';
 
-  async function loadSettings() {
-    cfg = await invoke('get_settings');
-    const s = cfg.settings;
-    $('#s-enabled').checked = !!s.enabled;
-    const sel = $('#s-voice');
-    sel.innerHTML = '';
-    for (const v of cfg.voices) {
-      const o = document.createElement('option');
-      o.value = v; o.textContent = v;
-      sel.append(o);
-    }
-    sel.value = s.voice;
-    $('#s-speed').value = s.speed;
-    $('#s-verbatim').value = s.verbatim_max;
-    $('#s-prompt').value = s.summary_prompt;
-    $('#promptstate').textContent = cfg.prompt_overridden ? 'custom prompt' : 'default prompt';
-    $('#s-save').checked = !!s.save_audio;
-    $('#s-dir').value = s.audio_dir;
-    $('#s-ttl').value = s.audio_ttl_minutes;
-    $('#s-hist').checked = !!s.save_history;
-    $('#s-histttl').value = s.history_ttl_minutes;
-    for (const kbd of $$('kbd[data-action]')) {
-      const accel = s.shortcuts[kbd.dataset.action] || '';
-      kbd.textContent = pretty(accel);
-      kbd.classList.toggle('none', !accel);
-    }
-  }
-
-  async function patch(p) {
-    const r = await invoke('save_settings', { patch: p });
-    $('#shortcuterr').textContent = (r.shortcut_errors || []).join(' · ');
-    await loadSettings(); refreshChip();
-  }
-
-  $('#s-enabled').onchange = () => patch({ enabled: $('#s-enabled').checked });
-  $('#s-voice').onchange = async () => {
-    await patch({ voice: $('#s-voice').value });
-    invoke('preview_voice', { voice: $('#s-voice').value });
-  };
-  $('#s-speed').onchange = () => patch({ speed: +$('#s-speed').value });
-  $('#speedtest').onclick = () => invoke('speak', { text: `This is ${$('#s-speed').value} times normal speed.` });
-  $('#s-verbatim').onchange = () => patch({ verbatim_max: +$('#s-verbatim').value });
-  $('#saveprompt').onclick = () => patch({ summary_prompt: $('#s-prompt').value });
-  $('#resetprompt').onclick = () => patch({ summary_prompt: cfg.defaults.summary_prompt });
-  $('#s-save').onchange = () => patch({ save_audio: $('#s-save').checked });
-  $('#s-dir').onchange = () => patch({ audio_dir: $('#s-dir').value });
-  $('#s-ttl').onchange = () => patch({ audio_ttl_minutes: +$('#s-ttl').value });
-  $('#opendir').onclick = () => invoke('open_audio_dir');
-  $('#s-hist').onchange = () => patch({ save_history: $('#s-hist').checked });
-  $('#s-histttl').onchange = () => patch({ history_ttl_minutes: +$('#s-histttl').value });
-  $('#openfilter').onclick = () => invoke('open_md_filter');
-
-  // --- shortcut recorder ---
   let recording = null;
   function stopRecording() {
     if (!recording) return;
@@ -328,7 +466,7 @@
     const accel = [...mods, key].join('+');
     const action = recording.action;
     stopRecording();
-    patch({ shortcuts: { ...cfg.settings.shortcuts, [action]: accel } });
+    setKey('shortcuts', { ...cfg.settings.shortcuts, [action]: accel });
   }
   $$('button[data-rec]').forEach(b => b.onclick = () => {
     stopRecording();
@@ -338,7 +476,7 @@
     document.addEventListener('keydown', onRecordKey, true);
   });
   $$('button[data-clear]').forEach(b => b.onclick = () =>
-    patch({ shortcuts: { ...cfg.settings.shortcuts, [b.dataset.clear]: '' } }));
+    setKey('shortcuts', { ...cfg.settings.shortcuts, [b.dataset.clear]: '' }));
 
   loadSettings();
 </script>

@@ -82,7 +82,9 @@ Quit from the tray menu.
   through the daemon.
 - The tray "enabled" checkbox doesn't refresh if state.json is edited
   externally while the menu is open.
-- Voice selection in the standalone vox CLI/TUI is separate (vox's own
-  config.toml); unifying the two config systems is a vox-core change.
+- The vox CLI and TUI honor `.vox.json` (voice/speed, plus save_audio and
+  audio_dir in the TUI) with flag/env taking precedence; the TUI has no
+  visual indicator yet that an override is active, and its settings screen
+  still saves to the global config.toml.
 - No bundling/codesigning yet (`bundle.active: false`); `cargo tauri build`
   + Developer ID notarization is the distribution path, no App Store needed.

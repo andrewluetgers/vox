@@ -42,6 +42,24 @@ pub fn expand_tilde(s: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
+/// Per-project overrides: the nearest .vox.json at or above the cwd.
+/// Shared with the Claude Code integration (claude/ in this repo) and the
+/// vox-tray app — a repo can pin its own voice/speed/audio settings.
+pub fn project_overrides() -> Option<serde_json::Value> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let candidate = dir.join(".vox.json");
+        if candidate.is_file() {
+            return std::fs::read_to_string(candidate)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok());
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
 impl Config {
     pub fn load() -> Self {
         std::fs::read_to_string(config_path())

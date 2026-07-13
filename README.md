@@ -130,6 +130,20 @@ export VOX_VOICE=bm_george   # default voice
 export VOX_SPEED=1.15        # default speech speed
 ```
 
+## Per-project settings
+
+A `.vox.json` at (or above) the current directory sets per-repo defaults —
+the same file the [Claude Code integration](claude/) uses for per-repo
+readout overrides:
+
+```json
+{ "voice": "bf_emma", "speed": 1.2 }
+```
+
+Precedence: CLI flag / env var → `.vox.json` → built-in default. The
+persistent UI also picks up `voice`, `speed`, `save_audio`, and `audio_dir`
+from it (settings saved from the UI still go to the global config.toml).
+
 ## Where things go
 
 - Spoken audio is saved to `~/Music/vox/` (override with `VOX_AUDIO_DIR`,
