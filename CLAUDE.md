@@ -25,8 +25,10 @@ force it — flag the asymmetry to the user and discuss instead.
 Current equivalences: repeat-last (tray menu "Repeat last" ↔ TUI Ctrl-R),
 recent history (tray "Recent" submenu ↔ TUI Ctrl-P picker, both last 10
 from shared history.jsonl), history source filter (panel History dropdowns
-↔ TUI picker ←/→ cycle), voice quick-pick (tray "Voice" submenu ↔ TUI
-Tab-settings voice field), settings (tray Settings tab ↔ TUI Tab popup),
+↔ TUI picker ←/→ cycle), voice quick-pick with provider sections (tray
+"Voice" submenu grouped by provider ↔ TUI Tab-settings voice field cycling
+all providers' voices; both driven by the same provider registry / `vox
+--list-voices`), settings (tray Settings tab ↔ TUI Tab popup),
 stop/pause/speed transport in both.
 
 Known accepted asymmetry: per-repo history filtering is panel-only (a
@@ -47,6 +49,15 @@ asked).
 - Text spoken by any surface should be logged to the shared history
   (respecting `save_history`) and update last-spoken.txt.
 - `vox --stop` kills all vox processes — it's the universal silencer.
+- Readouts queue rather than interrupt: one-shot playback serializes on an
+  exclusive lock of `~/.claude/vox/play.lock`. Neither the hook nor the tray
+  calls `--stop` before speaking; `--stop` silences current *and* queued.
+  (Accepted asymmetry: the TUI plays outside this queue.)
+- Voices are path strings: bare (`bm_george`) = local kokoro;
+  `provider/voice` or `provider/model/voice` = cloud (openai, elevenlabs,
+  xai, groq — see `docs/providers.md` and `src/providers/`). API keys come
+  from standard env vars only (`OPENAI_API_KEY`, …), never stored in any
+  config file. `vox --list-voices` shows everything with key status.
 - Installing a locally built binary: `rm` the old one first, then `cp`
   (`cp` over an existing signed binary invalidates the signature and macOS
   SIGKILLs it — "zsh: killed", exit 137).

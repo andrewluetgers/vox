@@ -78,6 +78,13 @@
   .hentry button { align-self: center; }
 
   /* shortcuts */
+  .logline { font: 11px ui-monospace, monospace; padding: 3px 6px;
+    border-bottom: 1px solid rgba(128,128,128,.12); display: flex; gap: 8px; }
+  .logline .when { opacity: .5; flex: none; width: 64px; }
+  .logline .ev { flex: none; width: 56px; opacity: .75; }
+  .logline.error { color: #e5534b; }
+  #log-lasterr { background: rgba(229,83,75,.12); border: 1px solid rgba(229,83,75,.4);
+    padding: 8px 10px; border-radius: 6px; margin-bottom: 10px; font-size: 12px; }
   table.shortcuts { border-collapse: collapse; width: 100%; }
   table.shortcuts td { padding: 5px 6px; border-bottom: 1px solid rgba(128,128,128,.15); }
   kbd {
@@ -92,6 +99,7 @@
 <nav>
   <button data-tab="speak" class="active">Speak</button>
   <button data-tab="history">History</button>
+  <button data-tab="log">Log</button>
   <button data-tab="settings">Settings</button>
   <span id="statechip"></span>
 </nav>
@@ -117,6 +125,15 @@
   <div id="histlist"></div>
 </section>
 
+<section class="tab" id="tab-log">
+  <div id="log-lasterr" style="display:none"></div>
+  <div class="row" style="margin-top:0">
+    <span class="hint">Readout lifecycle and errors from every surface
+      (<code>~/.claude/vox/log.jsonl</code>). Newest first.</span>
+  </div>
+  <div id="loglist"></div>
+</section>
+
 <section class="tab" id="tab-settings">
   <div id="scopebar">
     <label>Scope</label>
@@ -133,6 +150,8 @@
   <h3>Readouts</h3>
   <div class="row"><label>Speak Claude replies</label><input type="checkbox" id="s-enabled">
     <button class="clearovr" data-key="enabled">✕ clear</button></div>
+  <div class="row"><label>Launch at startup</label><input type="checkbox" id="s-login">
+    <span class="hint">adds a LaunchAgent for this app (always global)</span></div>
   <div class="row">
     <label>Voice</label>
     <select id="s-voice"></select>
@@ -249,6 +268,7 @@
     btn.classList.add('active');
     $('#tab-' + name).classList.add('active');
     if (name === 'history') loadHistory();
+    if (name === 'log') loadLog();
     if (name === 'settings') loadSettings();
   }
   $$('nav button[data-tab]').forEach(b => b.onclick = () => showTab(b.dataset.tab));
@@ -274,6 +294,32 @@
     } catch {}
   }
   refreshChip(); setInterval(refreshChip, 1500);
+
+  // --- log tab ---
+  async function loadLog() {
+    const entries = await invoke('get_log').catch(() => []);
+    const lastErr = entries.find(e => e.level === 'error');
+    const banner = $('#log-lasterr');
+    if (lastErr) {
+      banner.style.display = '';
+      banner.textContent = `Most recent error · ${ago(lastErr.ts)} — ${lastErr.detail}`;
+    } else {
+      banner.style.display = 'none';
+    }
+    $('#loglist').innerHTML = '';
+    for (const e of entries) {
+      const div = document.createElement('div');
+      div.className = 'logline' + (e.level === 'error' ? ' error' : '');
+      const when = document.createElement('span'); when.className = 'when'; when.textContent = ago(e.ts);
+      const ev = document.createElement('span'); ev.className = 'ev'; ev.textContent = e.event;
+      const detail = document.createElement('span'); detail.textContent = e.detail;
+      div.append(when, ev, detail);
+      $('#loglist').append(div);
+    }
+  }
+  setInterval(() => {
+    if ($('#tab-log').classList.contains('active')) loadLog();
+  }, 3000);
 
   // --- history tab ---
   function ago(ts) {
@@ -379,17 +425,32 @@
     const s = cfg.settings;
     const eff = (k) => (repo && k in ovr) ? ovr[k] : s[k];
 
-    // voices dropdown
+    // voices dropdown, grouped by provider with human labels
     const vsel = $('#s-voice');
     if (!vsel.options.length) {
+      let og = null, lastGroup = null;
       for (const v of cfg.voices) {
+        if (typeof v === 'string') { // older vox binary: plain paths
+          const o = document.createElement('option');
+          o.value = v; o.textContent = v;
+          vsel.append(o);
+          continue;
+        }
+        if (v.group !== lastGroup) {
+          og = document.createElement('optgroup');
+          og.label = v.error ? `${v.group} — ${v.error}` : v.group;
+          vsel.append(og);
+          lastGroup = v.group;
+        }
         const o = document.createElement('option');
-        o.value = v; o.textContent = v;
-        vsel.append(o);
+        o.value = v.path; o.textContent = v.label;
+        if (v.error) o.disabled = true;
+        og.append(o);
       }
     }
 
     $('#s-enabled').checked = !!eff('enabled');
+    $('#s-login').checked = !!cfg.launch_at_login;
     vsel.value = eff('voice');
     $('#s-speed').value = eff('speed');
     $('#s-verbatim').value = eff('verbatim_max');
@@ -445,6 +506,9 @@
   $('#scope').onchange = () => { scope = $('#scope').value; render(); };
 
   $('#s-enabled').onchange = () => setKey('enabled', $('#s-enabled').checked);
+  // app-level, not part of state.json / repo scopes
+  $('#s-login').onchange = () =>
+    invoke('set_launch_at_login', { enabled: $('#s-login').checked });
   $('#s-voice').onchange = async () => {
     await setKey('voice', $('#s-voice').value);
     invoke('preview_voice', { voice: $('#s-voice').value });

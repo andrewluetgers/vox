@@ -25,7 +25,10 @@ other processes can speak through one place.
     summarizer prompt with save/reset-to-default; a shortcut recorder for
     every action (click Record, press keys — conflicts and invalid combos
     are reported inline); audio saving (default off) with folder picker,
-    open-folder button, and delete-after TTL.
+    open-folder button, and delete-after TTL; **launch at startup**
+    (writes/removes a LaunchAgent plist pointing at the app — app-level,
+    not part of state.json). Full uninstall: `./uninstall.sh` at the
+    repo root.
 - **Global shortcuts** (all configurable, defaults):
   - ⌃⌥⌘V — speak clipboard; press again while speaking to stop
   - ⌃⌥⌘S — stop speaking

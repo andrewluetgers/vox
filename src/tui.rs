@@ -7,10 +7,10 @@
 
 use crate::config::Config;
 use crate::player::{Player, SAMPLE_RATE};
-use crate::{lang_for, save_wav, VOICE_NAMES};
+use crate::providers::{sentences, Availability, Provider, SynthReq, VoicePath};
+use crate::save_wav;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use kokoros::tts::koko::TTSKoko;
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -42,6 +42,8 @@ struct Shared {
     utterances: Vec<Utterance>,
     synthesizing: bool,
     saved_files: Vec<std::path::PathBuf>,
+    /// last synthesis error (bad key, unknown provider, API failure)
+    error: Option<String>,
 }
 
 struct Job {
@@ -51,27 +53,8 @@ struct Job {
     save_dir: Option<std::path::PathBuf>,
 }
 
-/// Split text into sentences (bounded length) for incremental synthesis.
-fn sentences(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    for ch in text.chars() {
-        cur.push(ch);
-        if matches!(ch, '.' | '!' | '?' | ';' | ':' | '\n') || cur.len() > 300 {
-            if !cur.trim().is_empty() {
-                out.push(cur.trim().to_string());
-            }
-            cur.clear();
-        }
-    }
-    if !cur.trim().is_empty() {
-        out.push(cur.trim().to_string());
-    }
-    out
-}
-
 fn synth_worker(
-    tts: TTSKoko,
+    providers: Vec<Box<dyn Provider>>,
     rx: mpsc::Receiver<Job>,
     shared: Arc<Mutex<Shared>>,
     player: Player,
@@ -83,6 +66,7 @@ fn synth_worker(
         {
             let mut sh = shared.lock().unwrap();
             sh.synthesizing = true;
+            sh.error = None;
             sh.utterances.push(Utterance {
                 words: Vec::new(),
                 start,
@@ -90,44 +74,128 @@ fn synth_worker(
                 done: false,
             });
         }
+        let vp = VoicePath::parse(&job.voice);
+        let provider = providers.iter().find(|p| p.name() == vp.provider);
         let mut was_cancelled = false;
-        for sentence in sentences(&job.text) {
-            if cancel.load(Ordering::SeqCst) {
-                was_cancelled = true;
-                break;
+        match provider {
+            None => {
+                let msg = format!("unknown provider '{}'", vp.provider);
+                crate::config::log_event("error", "tui", &msg);
+                shared.lock().unwrap().error = Some(msg);
             }
-            let audio = match tts.tts_raw_audio(
-                &sentence,
-                lang_for(&job.voice),
-                &job.voice,
-                job.speed,
-                None,
-                None,
-                None,
-                None,
-            ) {
-                Ok(a) => a,
-                Err(_) => continue,
-            };
-            let sent_start = player.len() as u64;
-            player.append(&audio);
-            let sent_len = audio.len() as u64;
-
-            // estimate word boundaries by character weight within the sentence
-            let words: Vec<&str> = sentence.split_whitespace().collect();
-            let total_chars: usize = words.iter().map(|w| w.len() + 1).sum();
-            let mut acc = 0usize;
-            let mut sh = shared.lock().unwrap();
-            let utt = sh.utterances.last_mut().unwrap();
-            for w in &words {
-                acc += w.len() + 1;
-                let end = sent_start + sent_len * acc as u64 / total_chars.max(1) as u64;
-                utt.words.push(Word {
-                    text: w.to_string(),
-                    end,
-                });
+            Some(p) if matches!(p.availability(), Availability::NeedsKey(_)) => {
+                if let Availability::NeedsKey(var) = p.availability() {
+                    let msg = format!("{} needs {var} set", p.name());
+                    crate::config::log_event("error", "tui", &msg);
+                    shared.lock().unwrap().error = Some(msg);
+                }
             }
-            utt.end = sent_start + sent_len;
+            Some(p) => {
+                let mut active = p;
+                let mut voice = vp.voice.clone();
+                let mut model = vp
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| p.default_model().to_string());
+                let mut fell_back = false;
+                let sents = sentences(&job.text);
+                let mut i = 0;
+                while i < sents.len() {
+                    if cancel.load(Ordering::SeqCst) {
+                        was_cancelled = true;
+                        break;
+                    }
+                    let sentence = &sents[i];
+                    let sent_start = player.len() as u64;
+                    let result = active.synth(
+                        &SynthReq {
+                            text: sentence,
+                            model: &model,
+                            voice: &voice,
+                            speed: job.speed,
+                        },
+                        &mut |audio| {
+                            player.append(audio);
+                            !cancel.load(Ordering::SeqCst)
+                        },
+                    );
+                    let sent_len = player.len() as u64 - sent_start;
+                    let mut sh = shared.lock().unwrap();
+                    let utt = sh.utterances.last_mut().unwrap();
+                    match result {
+                        Ok(Some(timed)) => {
+                            // provider alignment: offsets relative to sentence start
+                            for w in timed {
+                                utt.words.push(Word {
+                                    text: w.text,
+                                    end: sent_start + w.end.min(sent_len),
+                                });
+                            }
+                            utt.end = sent_start + sent_len;
+                            i += 1;
+                        }
+                        Ok(None) => {
+                            // estimate word boundaries by character weight
+                            let words: Vec<&str> = sentence.split_whitespace().collect();
+                            let total_chars: usize =
+                                words.iter().map(|w| w.len() + 1).sum();
+                            let mut acc = 0usize;
+                            for w in &words {
+                                acc += w.len() + 1;
+                                let end = sent_start
+                                    + sent_len * acc as u64 / total_chars.max(1) as u64;
+                                utt.words.push(Word {
+                                    text: w.to_string(),
+                                    end,
+                                });
+                            }
+                            utt.end = sent_start + sent_len;
+                            i += 1;
+                        }
+                        // Cloud failure: remember why (menus gray it out) and
+                        // retry this sentence on local kokoro.
+                        Err(e) if active.name() != "kokoro" && !fell_back => {
+                            let name = active.name();
+                            let reason =
+                                crate::providers::short_reason(&format!("{e:#}"));
+                            crate::config::record_provider_error(name, &reason);
+                            crate::config::log_event(
+                                "error",
+                                "tui",
+                                &format!("{name}: {e:#} — falling back to kokoro"),
+                            );
+                            match providers.iter().find(|q| q.name() == "kokoro") {
+                                Some(k) => {
+                                    sh.error = Some(format!(
+                                        "{name} failed ({reason}) — using Kokoro"
+                                    ));
+                                    active = k;
+                                    voice = "bm_george".into();
+                                    model = "v1.0".into();
+                                    fell_back = true;
+                                }
+                                None => {
+                                    utt.end = sent_start + sent_len;
+                                    sh.error = Some(e.to_string());
+                                    break;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            utt.end = sent_start + sent_len;
+                            sh.error = Some(e.to_string());
+                            crate::config::log_event("error", "tui", &e.to_string());
+                            break;
+                        }
+                    }
+                }
+                if !fell_back && active.name() != "kokoro" && !sents.is_empty() {
+                    let done_ok = shared.lock().unwrap().error.is_none();
+                    if done_ok && !was_cancelled {
+                        crate::config::clear_provider_error(active.name());
+                    }
+                }
+            }
         }
         if was_cancelled || cancel.load(Ordering::SeqCst) {
             // Esc means stop everything: drop any queued submissions too
@@ -163,19 +231,35 @@ fn synth_worker(
     }
 }
 
-pub async fn run(tts: TTSKoko, mut cfg: Config) -> Result<()> {
+pub async fn run(providers: Vec<Box<dyn Provider>>, mut cfg: Config) -> Result<()> {
     let player = Player::new();
     let (_stream, handle) = OutputStream::try_default()?;
     let sink = Sink::try_new(&handle).map_err(|e| anyhow::anyhow!("audio: {e}"))?;
     sink.append(player.source());
 
+    // voices offered by the settings picker: kokoro bare, others provider/voice,
+    // cloud providers included only when their API key is present
+    let voice_list: Vec<String> = providers
+        .iter()
+        .filter(|p| matches!(p.availability(), Availability::Ready))
+        .flat_map(|p| {
+            let name = p.name();
+            p.voices().into_iter().map(move |v| {
+                if name == "kokoro" {
+                    v
+                } else {
+                    format!("{name}/{v}")
+                }
+            })
+        })
+        .collect();
+
     let shared = Arc::new(Mutex::new(Shared::default()));
     let cancel = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel::<Job>();
     {
-        let (tts, shared, player, cancel) =
-            (tts.clone(), shared.clone(), player.clone(), cancel.clone());
-        std::thread::spawn(move || synth_worker(tts, rx, shared, player, cancel));
+        let (shared, player, cancel) = (shared.clone(), player.clone(), cancel.clone());
+        std::thread::spawn(move || synth_worker(providers, rx, shared, player, cancel));
     }
 
     let mut terminal = ratatui::init();
@@ -189,6 +273,7 @@ pub async fn run(tts: TTSKoko, mut cfg: Config) -> Result<()> {
         &cancel,
         &tx,
         &mut cfg,
+        voice_list,
     );
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
     ratatui::restore();
@@ -228,6 +313,8 @@ struct UiState {
     hist_filter: usize,
     /// last text spoken this session (falls back to shared last-spoken.txt)
     last_text: Option<String>,
+    /// all selectable voices across providers (kokoro bare, else provider/voice)
+    voice_list: Vec<String>,
 }
 
 fn ui_loop(
@@ -238,6 +325,7 @@ fn ui_loop(
     cancel: &Arc<AtomicBool>,
     tx: &mpsc::Sender<Job>,
     cfg: &mut Config,
+    voice_list: Vec<String>,
 ) -> Result<()> {
     let mut st = UiState {
         input: String::new(),
@@ -254,6 +342,7 @@ fn ui_loop(
         hist_filters: Vec::new(),
         hist_filter: 0,
         last_text: crate::config::last_spoken(),
+        voice_list,
     };
     // hold-to-scrub detection (same scheme as one-shot mode)
     let mut last_arrow: Option<(KeyCode, Instant)> = None;
@@ -484,13 +573,13 @@ fn handle_settings_key(st: &mut UiState, code: KeyCode, cfg: &mut Config) {
             let fwd = code != KeyCode::Left;
             match st.settings_sel {
                 0 => {
-                    let i = VOICE_NAMES
-                        .iter()
-                        .position(|v| *v == cfg.voice)
-                        .unwrap_or(0);
-                    let n = VOICE_NAMES.len();
-                    cfg.voice =
-                        VOICE_NAMES[if fwd { (i + 1) % n } else { (i + n - 1) % n }].to_string();
+                    let list = &st.voice_list;
+                    if !list.is_empty() {
+                        let i = list.iter().position(|v| *v == cfg.voice).unwrap_or(0);
+                        let n = list.len();
+                        cfg.voice =
+                            list[if fwd { (i + 1) % n } else { (i + n - 1) % n }].clone();
+                    }
                 }
                 1 => {
                     cfg.speed = (cfg.speed + if fwd { 0.1 } else { -0.1 }).clamp(0.5, 2.0);
@@ -528,6 +617,18 @@ fn fmt_time(samples: f64) -> String {
     format!("{}:{:02}", (s as u64) / 60, (s as u64) % 60)
 }
 
+/// Words instead of codes: "bm_george" -> "British male · George",
+/// "openai/nova" -> "openai · Nova".
+fn voice_display(voice: &str) -> String {
+    let vp = VoicePath::parse(voice);
+    let label = crate::providers::voice_label(&vp.provider, &vp.voice);
+    if vp.provider == "kokoro" {
+        label
+    } else {
+        format!("{} · {label}", vp.provider)
+    }
+}
+
 #[cfg(test)]
 mod hist_tests {
     use super::*;
@@ -548,6 +649,7 @@ mod hist_tests {
             hist_filters: filters.iter().map(|s| s.to_string()).collect(),
             hist_filter: filter,
             last_text: None,
+            voice_list: Vec::new(),
         }
     }
 
@@ -628,7 +730,9 @@ fn draw(
 
     // ---- status line ----
     let len = player.len() as f64;
-    let state = if sh.synthesizing {
+    let state = if let Some(err) = &sh.error {
+        format!("⚠ {err}")
+    } else if sh.synthesizing {
         format!("{} synthesizing", SPINNER[st.tick % SPINNER.len()])
     } else if sink.is_paused() {
         "⏸ paused".into()
@@ -647,7 +751,7 @@ fn draw(
             fmt_time(player.pos()),
             fmt_time(len),
             player.rate(),
-            cfg.voice
+            voice_display(&cfg.voice)
         )),
         Span::styled(
             "tab settings · ^R repeat · ^P recent · esc stop · space pause · ←/→ skip · ↑/↓ speed · ^C quit",
@@ -725,7 +829,7 @@ fn draw(
         );
         f.render_widget(Clear, area);
         let values = [
-            cfg.voice.clone(),
+            voice_display(&cfg.voice),
             format!("{:.1}x", cfg.speed),
             match &st.editing {
                 Some(buf) => format!("{buf}▌"),

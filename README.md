@@ -31,6 +31,16 @@ Phonemization is espeak-ng — the same G2P Kokoro was trained with, so
 pronunciation matches the reference Python implementation, including
 proper British phonemes (`en-gb-x-rp`) for the `b*` voices.
 
+## Uninstall
+
+```sh
+./uninstall.sh           # binary, tray launch agent, Claude hook/skill
+./uninstall.sh --purge   # also state/history, model cache, config, saved audio
+```
+
+Without `--purge`, user data stays (`~/.claude/vox`, `~/Library/Caches/vox`,
+`~/.config/vox`, `~/Music/vox`) and the script lists what it kept.
+
 ## Usage
 
 ```sh

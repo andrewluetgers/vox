@@ -49,6 +49,9 @@ const VOICES: &[&str] = &[
 ];
 
 static CURRENT: Mutex<Option<Child>> = Mutex::new(None);
+/// All selectable voice paths (kokoro bare, cloud "provider/voice"), refreshed
+/// from `vox --list-voices` on menu rebuild; used to validate picks/previews.
+static VOICE_PATHS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 // The tray menu is rebuilt whenever history/state change, so the checkbox
 // handle is replaced rather than set once.
 static ENABLED_ITEM: Mutex<Option<CheckMenuItem<Wry>>> = Mutex::new(None);
@@ -199,7 +202,8 @@ fn stop_speaking() {
 }
 
 fn spawn_vox(extra: &[&str], voice_override: Option<&str>) {
-    stop_speaking();
+    // No stop_speaking() here: vox serializes playback on a shared lock, so
+    // a new readout queues behind the current one instead of interrupting.
     let state = effective_state();
     let voice = voice_override
         .unwrap_or_else(|| state["voice"].as_str().unwrap_or("bm_george"))
@@ -223,6 +227,73 @@ fn spawn_vox(extra: &[&str], voice_override: Option<&str>) {
     if let Ok(child) = cmd.spawn() {
         *CURRENT.lock().unwrap() = Some(child);
     }
+}
+
+/// One selectable voice: raw path (what gets stored), a human label
+/// ("British male · George"), and — when the provider recently failed —
+/// the short reason, which grays the voice out with an explanation.
+#[derive(Clone)]
+struct VoiceEntry {
+    path: String,
+    label: String,
+    error: Option<String>,
+}
+
+/// Voices from `vox --list-voices --json`, grouped by provider in output
+/// order, labeled for humans. Providers missing an API key are skipped;
+/// providers with a recent runtime error (quota, terms, network) are kept
+/// but marked so the UI can gray them out. Falls back to the static kokoro
+/// list if the binary is missing. Also refreshes VOICE_PATHS (which only
+/// contains selectable, non-erroring voices).
+fn voice_groups() -> Vec<(String, Vec<VoiceEntry>)> {
+    let entries: Vec<Value> = Command::new(vox_bin())
+        .args(["--list-voices", "--json"])
+        .output()
+        .ok()
+        .and_then(|o| serde_json::from_slice(&o.stdout).ok())
+        .unwrap_or_default();
+    let mut groups: Vec<(String, String, Vec<VoiceEntry>)> = Vec::new();
+    for e in &entries {
+        if e["ready"].as_bool() != Some(true) {
+            continue;
+        }
+        let (Some(path), Some(provider)) = (e["path"].as_str(), e["provider"].as_str()) else {
+            continue;
+        };
+        let entry = VoiceEntry {
+            path: path.to_string(),
+            label: e["label"].as_str().unwrap_or(path).to_string(),
+            error: e["error"].as_str().map(String::from),
+        };
+        let header = e["provider_label"].as_str().unwrap_or(provider).to_string();
+        match groups.last_mut() {
+            Some((g, _, v)) if *g == provider => v.push(entry),
+            _ => groups.push((provider.to_string(), header, vec![entry])),
+        }
+    }
+    if groups.is_empty() {
+        groups.push((
+            "kokoro".into(),
+            "Kokoro-82M · local".into(),
+            VOICES
+                .iter()
+                .map(|s| VoiceEntry { path: s.to_string(), label: s.to_string(), error: None })
+                .collect(),
+        ));
+    }
+    *VOICE_PATHS.lock().unwrap() = groups
+        .iter()
+        .flat_map(|(_, _, v)| v.iter().filter(|e| e.error.is_none()).map(|e| e.path.clone()))
+        .collect();
+    groups.into_iter().map(|(_, header, v)| (header, v)).collect()
+}
+
+/// Current selectable voice paths (populating them if the menu hasn't built yet).
+fn voice_paths() -> Vec<String> {
+    if VOICE_PATHS.lock().unwrap().is_empty() {
+        voice_groups();
+    }
+    VOICE_PATHS.lock().unwrap().clone()
 }
 
 /// Markdown -> speakable text via the shared md2speech.sh filter (formatting
@@ -603,20 +674,27 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     // the future home of other providers/models.
     let current_voice = effective_state()["voice"].as_str().unwrap_or("bm_george").to_string();
     let mut voice_menu = SubmenuBuilder::new(app, "Voice");
-    voice_menu = voice_menu.item(
-        &MenuItemBuilder::with_id("voice-header", "Kokoro-82M · local")
-            .enabled(false)
-            .build(app)?,
-    );
-    for v in VOICES {
-        voice_menu = voice_menu.item(&CheckMenuItem::with_id(
-            app,
-            format!("voice-{v}"),
-            *v,
-            true,
-            *v == current_voice,
-            None::<&str>,
-        )?);
+    for (header, voices) in voice_groups() {
+        // a provider-level error shows once, on the section header
+        let header_text = match voices.iter().find_map(|v| v.error.clone()) {
+            Some(err) => format!("{header} — {err}"),
+            None => header.clone(),
+        };
+        voice_menu = voice_menu.item(
+            &MenuItemBuilder::with_id(format!("voice-header-{header}"), header_text)
+                .enabled(false)
+                .build(app)?,
+        );
+        for v in voices {
+            voice_menu = voice_menu.item(&CheckMenuItem::with_id(
+                app,
+                format!("voice-{}", v.path),
+                &v.label,
+                v.error.is_none(), // gray out voices whose provider is failing
+                v.path == current_voice,
+                None::<&str>,
+            )?);
+        }
     }
     let voice_menu = voice_menu
         .separator()
@@ -651,10 +729,11 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
 fn start_menu_refresher(app: AppHandle) {
     std::thread::spawn(move || {
         let mtime = |p: PathBuf| fs::metadata(p).and_then(|m| m.modified()).ok();
-        let mut last = (mtime(history_path()), mtime(state_path()));
+        let perr = || vox_dir().join("provider-errors.json");
+        let mut last = (mtime(history_path()), mtime(state_path()), mtime(perr()));
         loop {
             std::thread::sleep(Duration::from_secs(3));
-            let cur = (mtime(history_path()), mtime(state_path()));
+            let cur = (mtime(history_path()), mtime(state_path()), mtime(perr()));
             if cur != last {
                 last = cur;
                 let app2 = app.clone();
@@ -666,6 +745,67 @@ fn start_menu_refresher(app: AppHandle) {
             }
         }
     });
+}
+
+// --- launch at login ------------------------------------------------------
+
+const LAUNCH_AGENT_LABEL: &str = "dev.andrewluetgers.vox-tray";
+
+fn launch_agent_path() -> PathBuf {
+    home().join(format!("Library/LaunchAgents/{LAUNCH_AGENT_LABEL}.plist"))
+}
+
+#[tauri::command]
+fn get_launch_at_login() -> bool {
+    launch_agent_path().exists()
+}
+
+/// Toggle launch-at-login via a plain LaunchAgent plist pointing at the
+/// current executable — transparent, and uninstall is just removing the file.
+#[tauri::command]
+fn set_launch_at_login(enabled: bool) -> Value {
+    let path = launch_agent_path();
+    if !enabled {
+        let _ = Command::new("launchctl")
+            .args(["bootout", &format!("gui/{}/{LAUNCH_AGENT_LABEL}", uid())])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = fs::remove_file(&path);
+        return json!({"ok": true, "enabled": false});
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return json!({"ok": false, "error": "can't locate the app executable"});
+    };
+    // minimal XML escaping for the path
+    let exe = exe.display().to_string().replace('&', "&amp;").replace('<', "&lt;");
+    let plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>{LAUNCH_AGENT_LABEL}</string>
+  <key>ProgramArguments</key><array><string>{exe}</string></array>
+  <key>RunAtLoad</key><true/>
+</dict></plist>
+"#
+    );
+    if let Some(dir) = path.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    match fs::write(&path, plist) {
+        Ok(_) => json!({"ok": true, "enabled": true, "path": path.display().to_string()}),
+        Err(e) => json!({"ok": false, "error": e.to_string()}),
+    }
+}
+
+fn uid() -> u32 {
+    // uid without a libc dependency: launchctl needs "gui/<uid>/<label>"
+    std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+        .unwrap_or(501)
 }
 
 fn open_panel(app: &AppHandle) {
@@ -730,7 +870,18 @@ fn get_settings() -> Value {
             "shortcuts": default_shortcuts_json(),
         },
         "prompt_overridden": !stored["summary_prompt"].is_null(),
-        "voices": VOICES,
+        "launch_at_login": get_launch_at_login(),
+        // [{path, label, group, error}] — the panel renders optgroups from
+        // `group` and disables entries with an `error`
+        "voices": voice_groups()
+            .into_iter()
+            .flat_map(|(header, voices)| {
+                voices.into_iter().map(move |v| {
+                    json!({"path": v.path, "label": v.label, "group": header.clone(),
+                           "error": v.error})
+                })
+            })
+            .collect::<Vec<_>>(),
     })
 }
 
@@ -747,12 +898,28 @@ fn save_settings(app: AppHandle, patch: Value) -> Value {
 /// Speak a short sample so the user hears the voice they just picked.
 #[tauri::command]
 fn preview_voice(voice: String) {
-    if !VOICES.contains(&voice.as_str()) {
+    if !voice_paths().contains(&voice) {
         return;
     }
-    let name = voice.split('_').nth(1).unwrap_or(&voice);
+    // "openai/nova" -> "nova"; "bm_george" -> "george"
+    let last = voice.rsplit('/').next().unwrap_or(&voice);
+    let name = last.split('_').nth(1).unwrap_or(last);
     let sample = format!("Hello, this is the {name} voice. This is how I sound.");
     spawn_vox(&[&sample], Some(&voice));
+}
+
+/// Last 200 log entries (newest first) from the shared operational log —
+/// readout lifecycle and errors from vox, the hook, and the TUI.
+#[tauri::command]
+fn get_log() -> Value {
+    let lines = fs::read_to_string(vox_dir().join("log.jsonl")).unwrap_or_default();
+    let mut entries: Vec<Value> = lines
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    entries.reverse();
+    entries.truncate(200);
+    json!(entries)
 }
 
 #[tauri::command]
@@ -893,8 +1060,11 @@ fn main() {
             status,
             get_settings,
             save_settings,
+            get_launch_at_login,
+            set_launch_at_login,
             preview_voice,
             get_history,
+            get_log,
             clear_history,
             open_audio_dir,
             open_md_filter,
@@ -956,7 +1126,7 @@ fn main() {
                     "voice-more" => open_panel_tab(app, "settings"),
                     id if id.starts_with("voice-") => {
                         let v = &id["voice-".len()..];
-                        if VOICES.contains(&v) {
+                        if voice_paths().iter().any(|p| p == v) {
                             apply_patch(&json!({"voice": v}));
                             preview_voice(v.to_string());
                         }

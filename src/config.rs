@@ -129,6 +129,102 @@ pub fn recent_history_in(dir: &std::path::Path, n: usize) -> Vec<(String, String
     items
 }
 
+/// Operational log shared by every surface (~/.claude/vox/log.jsonl):
+/// readout lifecycle and errors, browsable in the tray panel's Log tab.
+/// Pruned to the newest 500 lines once the file passes ~256 KB.
+pub fn log_event(level: &str, event: &str, detail: &str) {
+    log_event_in(&shared_dir(), level, event, detail)
+}
+
+pub fn log_event_in(dir: &std::path::Path, level: &str, event: &str, detail: &str) {
+    let _ = std::fs::create_dir_all(dir);
+    let path = dir.join("log.jsonl");
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let entry = serde_json::json!({"ts": ts, "level": level, "event": event, "detail": detail});
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "{entry}");
+    }
+    if std::fs::metadata(&path).map(|m| m.len() > 256 * 1024).unwrap_or(false) {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            let lines: Vec<&str> = content.lines().collect();
+            let keep = lines.len().saturating_sub(500);
+            let _ = std::fs::write(&path, lines[keep..].join("\n") + "\n");
+        }
+    }
+}
+
+/// Provider health (~/.claude/vox/provider-errors.json): the last runtime
+/// failure per cloud provider, so menus can gray voices out with a reason.
+/// Entries expire after 30 minutes and are cleared by a successful readout.
+const PROVIDER_ERROR_TTL_SECS: u64 = 30 * 60;
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn provider_errors_path(dir: &std::path::Path) -> std::path::PathBuf {
+    dir.join("provider-errors.json")
+}
+
+/// Current (unexpired) provider errors: provider -> short reason.
+pub fn provider_errors() -> serde_json::Map<String, serde_json::Value> {
+    provider_errors_in(&shared_dir())
+}
+
+pub fn provider_errors_in(dir: &std::path::Path) -> serde_json::Map<String, serde_json::Value> {
+    let raw: serde_json::Value = std::fs::read_to_string(provider_errors_path(dir))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let cutoff = now_secs().saturating_sub(PROVIDER_ERROR_TTL_SECS);
+    raw.as_object()
+        .map(|m| {
+            m.iter()
+                .filter(|(_, v)| v["ts"].as_u64().unwrap_or(0) >= cutoff)
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn record_provider_error(provider: &str, reason: &str) {
+    record_provider_error_in(&shared_dir(), provider, reason)
+}
+
+pub fn record_provider_error_in(dir: &std::path::Path, provider: &str, reason: &str) {
+    let _ = std::fs::create_dir_all(dir);
+    let mut m = provider_errors_in(dir); // re-reading also drops expired entries
+    m.insert(
+        provider.to_string(),
+        serde_json::json!({"ts": now_secs(), "reason": reason}),
+    );
+    let _ = std::fs::write(
+        provider_errors_path(dir),
+        serde_json::Value::Object(m).to_string(),
+    );
+}
+
+pub fn clear_provider_error(provider: &str) {
+    clear_provider_error_in(&shared_dir(), provider)
+}
+
+pub fn clear_provider_error_in(dir: &std::path::Path, provider: &str) {
+    let mut m = provider_errors_in(dir);
+    if m.remove(provider).is_some() {
+        let _ = std::fs::write(
+            provider_errors_path(dir),
+            serde_json::Value::Object(m).to_string(),
+        );
+    }
+}
+
 pub fn last_spoken() -> Option<String> {
     last_spoken_in(&shared_dir())
 }
@@ -203,6 +299,48 @@ mod tests {
         assert_eq!(last_spoken_in(&dir).as_deref(), Some("second thing"));
         // n caps the result
         assert_eq!(recent_history_in(&dir, 1).len(), 1);
+    }
+
+    #[test]
+    fn log_appends_and_prunes_when_large() {
+        let dir = tmp("log");
+        log_event_in(&dir, "info", "speak", "openai/nova · 42 chars");
+        log_event_in(&dir, "error", "synth", "openai: HTTP 429: quota");
+        let content = std::fs::read_to_string(dir.join("log.jsonl")).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1].contains("429"));
+
+        // force the file over the prune threshold, then log once more
+        let filler = "x".repeat(300);
+        for _ in 0..1000 {
+            log_event_in(&dir, "info", "speak", &filler);
+        }
+        // pruning trims to 500 lines each time the file crosses 256 KB, then
+        // the file grows again until the next crossing — so the count stays
+        // well under the 1002 writes but may sit above 500 between prunes
+        let content = std::fs::read_to_string(dir.join("log.jsonl")).unwrap();
+        let n = content.lines().count();
+        assert!((500..800).contains(&n), "log should be pruned, got {n} lines");
+    }
+
+    #[test]
+    fn provider_errors_record_clear_and_expire() {
+        let dir = tmp("perr");
+        record_provider_error_in(&dir, "openai", "insufficient quota");
+        let m = provider_errors_in(&dir);
+        assert_eq!(m["openai"]["reason"], "insufficient quota");
+
+        clear_provider_error_in(&dir, "openai");
+        assert!(provider_errors_in(&dir).is_empty());
+
+        // stale entries (past the 30-minute TTL) are filtered on read
+        std::fs::write(
+            dir.join("provider-errors.json"),
+            r#"{"groq": {"ts": 1000, "reason": "old"}}"#,
+        )
+        .unwrap();
+        assert!(provider_errors_in(&dir).is_empty());
     }
 
     #[test]

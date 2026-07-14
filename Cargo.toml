@@ -1,15 +1,17 @@
 [package]
 name = "vox"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 description = "Local streaming text-to-speech CLI — Kokoro via ONNX, single binary"
 license = "MIT"
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 crossterm = "0.28"
 dirs = "5"
+fs2 = "0.4"
 hound = "3.5"
 kokoros = { git = "https://github.com/lucasjinreal/Kokoros" }
 ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }

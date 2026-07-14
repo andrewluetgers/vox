@@ -2,12 +2,15 @@
 
 mod config;
 mod player;
+mod providers;
 mod tui;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use kokoros::tts::koko::TTSKoko;
 use player::SAMPLE_RATE;
+use providers::kokoro::VOICE_NAMES;
+use providers::{Availability, Provider, SynthReq, VoicePath};
 use rodio::{OutputStream, Sink};
 use std::{
     fs,
@@ -21,13 +24,6 @@ const RELEASE_BASE: &str =
 // fp32 over int8: ~2x faster on Apple Silicon CPUs despite the bigger download
 const MODEL_FILE: &str = "kokoro-v1.0.onnx";
 const VOICES_FILE: &str = "voices-v1.0.bin";
-
-pub const VOICE_NAMES: &[&str] = &[
-    // British male / female
-    "bm_george", "bm_lewis", "bm_daniel", "bm_fable", "bf_emma", "bf_isabella",
-    // American male / female
-    "am_adam", "am_michael", "af_heart", "af_bella", "af_nicole", "af_sarah",
-];
 
 #[derive(Parser)]
 #[command(name = "vox", version, about = "Read text aloud with Kokoro TTS (local, streaming)")]
@@ -58,6 +54,9 @@ struct Args {
     /// List available voices
     #[arg(long)]
     list_voices: bool,
+    /// With --list-voices: emit JSON (path, label, provider, ready)
+    #[arg(long)]
+    json: bool,
     /// Download model files (~350 MB) and exit
     #[arg(long)]
     setup: bool,
@@ -319,6 +318,23 @@ fn ensure_models() -> Result<(PathBuf, PathBuf)> {
     Ok((model, voices))
 }
 
+/// Serialize playback across vox processes: overlapping readouts queue
+/// instead of talking over each other. The lock is released automatically on
+/// exit; `vox --stop` clears the whole queue because it kills every vox
+/// process (waiters included).
+fn acquire_play_lock() -> Result<fs::File> {
+    use fs2::FileExt;
+    let dir = config::shared_dir();
+    fs::create_dir_all(&dir)?;
+    let f = fs::File::create(dir.join("play.lock"))?;
+    if f.try_lock_exclusive().is_err() {
+        eprintln!("queued: waiting for the current readout (vox --stop silences all)");
+        config::log_event("info", "queued", "waiting for current readout");
+        f.lock_exclusive()?;
+    }
+    Ok(f)
+}
+
 fn read_text(args: &Args) -> Result<String> {
     let text = if args.clip {
         let out = Command::new("pbpaste").output().context("pbpaste failed")?;
@@ -392,11 +408,88 @@ pub fn save_wav(path: &Path, samples: &[f32]) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let result = run().await;
+    if let Err(e) = &result {
+        report_failure(e);
+    }
+    result
+}
+
+/// Failures from spawned readouts (tray, Claude hook) would otherwise vanish
+/// into /dev/null: log them, and when stderr isn't a terminal raise a macOS
+/// notification so the user learns why nothing was spoken.
+fn report_failure(err: &anyhow::Error) {
+    config::log_event("error", "vox", &format!("{err:#}"));
+    notify_headless(&format!("{err:#}"));
+}
+
+/// Post a macOS notification, but only when nobody is watching stderr
+/// (i.e. vox was spawned by the tray or the Claude hook).
+fn notify_headless(msg: &str) {
+    use std::io::IsTerminal;
+    if std::io::stderr().is_terminal() {
+        return;
+    }
+    let msg: String = msg.replace('"', "'").chars().take(180).collect();
+    let _ = Command::new("osascript")
+        .args(["-e", &format!(r#"display notification "{msg}" with title "vox""#)])
+        .status();
+}
+
+async fn run() -> Result<()> {
     let args = Args::parse();
 
     if args.list_voices {
-        for v in VOICE_NAMES {
-            println!("{v}");
+        let mut entries: Vec<serde_json::Value> = VOICE_NAMES
+            .iter()
+            .map(|v| {
+                serde_json::json!({
+                    "path": v,
+                    "label": providers::voice_label("kokoro", v),
+                    "provider": "kokoro",
+                    "provider_label": providers::provider_label("kokoro"),
+                    "ready": true,
+                })
+            })
+            .collect();
+        let errors = config::provider_errors();
+        for p in providers::cloud_providers() {
+            let needs = match p.availability() {
+                Availability::Ready => None,
+                Availability::NeedsKey(var) => Some(var),
+            };
+            let error = errors
+                .get(p.name())
+                .and_then(|v| v["reason"].as_str())
+                .map(String::from);
+            for v in p.voices() {
+                entries.push(serde_json::json!({
+                    "path": format!("{}/{}", p.name(), v),
+                    "label": providers::voice_label(p.name(), &v),
+                    "provider": p.name(),
+                    "provider_label": providers::provider_label(p.name()),
+                    "ready": needs.is_none(),
+                    "needs": needs,
+                    "error": error,
+                }));
+            }
+        }
+        if args.json {
+            println!("{}", serde_json::Value::Array(entries));
+        } else {
+            for e in entries {
+                let suffix = match (e["needs"].as_str(), e["error"].as_str()) {
+                    (Some(var), _) => format!("   (needs {var})"),
+                    (None, Some(err)) => format!("   (error: {err})"),
+                    _ => String::new(),
+                };
+                println!(
+                    "{:<44} {}{}",
+                    e["path"].as_str().unwrap_or(""),
+                    e["label"].as_str().unwrap_or(""),
+                    suffix
+                );
+            }
         }
         return Ok(());
     }
@@ -412,8 +505,8 @@ async fn main() -> Result<()> {
         std::env::set_var("PIPER_ESPEAKNG_DATA_DIRECTORY", cache_dir());
     }
 
-    let (model_path, voices_path) = ensure_models()?;
     if args.setup {
+        ensure_models()?;
         eprintln!("Models ready in {}", cache_dir().display());
         return Ok(());
     }
@@ -425,6 +518,7 @@ async fn main() -> Result<()> {
     if args.ui
         || (args.text.is_none() && args.file.is_none() && !args.clip && atty_stdin())
     {
+        let (model_path, voices_path) = ensure_models()?;
         let tts = TTSKoko::new(
             model_path.to_str().context("bad model path")?,
             voices_path.to_str().context("bad voices path")?,
@@ -433,9 +527,8 @@ async fn main() -> Result<()> {
         let mut cfg = config::Config::load();
         if let Some(p) = &proj {
             if let Some(v) = p["voice"].as_str() {
-                if VOICE_NAMES.contains(&v) {
-                    cfg.voice = v.into();
-                }
+                // any provider path; resolved and validated at synthesis
+                cfg.voice = v.into();
             }
             if let Some(s) = p["speed"].as_f64() {
                 cfg.speed = s as f32;
@@ -447,7 +540,10 @@ async fn main() -> Result<()> {
                 cfg.audio_dir = d.into();
             }
         }
-        return tui::run(tts, cfg).await;
+        let mut provs: Vec<Box<dyn Provider>> =
+            vec![Box::new(providers::kokoro::Kokoro { tts })];
+        provs.extend(providers::cloud_providers());
+        return tui::run(provs, cfg).await;
     }
 
     let voice = args
@@ -464,22 +560,54 @@ async fn main() -> Result<()> {
         .unwrap_or(1.0);
 
     let text = apply_lexicon(&read_text(&args)?, &load_lexicon());
-    if !VOICE_NAMES.contains(&voice.as_str()) {
-        bail!("unknown voice '{}' (try --list-voices)", voice);
-    }
+    let vp = VoicePath::parse(&voice);
 
     let t0 = Instant::now();
-    let tts = TTSKoko::new(
-        model_path.to_str().context("bad model path")?,
-        voices_path.to_str().context("bad voices path")?,
-    )
-    .await;
+    let provider: Box<dyn Provider> = if vp.provider == "kokoro" {
+        if !VOICE_NAMES.contains(&vp.voice.as_str()) {
+            bail!("unknown voice '{}' (try --list-voices)", vp.voice);
+        }
+        let (model_path, voices_path) = ensure_models()?;
+        let tts = TTSKoko::new(
+            model_path.to_str().context("bad model path")?,
+            voices_path.to_str().context("bad voices path")?,
+        )
+        .await;
+        eprintln!("Model loaded in {:.2}s", t0.elapsed().as_secs_f32());
+        Box::new(providers::kokoro::Kokoro { tts })
+    } else {
+        let p = providers::cloud_providers()
+            .into_iter()
+            .find(|p| p.name() == vp.provider)
+            .with_context(|| {
+                format!("unknown provider '{}' (try --list-voices)", vp.provider)
+            })?;
+        if let Availability::NeedsKey(var) = p.availability() {
+            bail!("provider '{}' needs the {var} environment variable", p.name());
+        }
+        p
+    };
+    let model = vp
+        .model
+        .clone()
+        .unwrap_or_else(|| provider.default_model().to_string());
     let load = t0.elapsed();
-    eprintln!("Model loaded in {:.2}s", load.as_secs_f32());
+    config::log_event(
+        "info",
+        "speak",
+        &format!("{voice} · {} chars", text.chars().count()),
+    );
 
     use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
 
     let play = player::Player::new();
+
+    // wait for any current readout to finish before making sound
+    let _play_lock = if args.no_play {
+        None
+    } else {
+        Some(acquire_play_lock()?)
+    };
 
     let (_stream, sink) = if args.no_play {
         (None, None)
@@ -501,19 +629,25 @@ async fn main() -> Result<()> {
     }
 
     let mut first_audio: Option<f32> = None;
-    let synth_result = tts.tts_raw_audio_streaming(
-        &text,
-        lang_for(&voice),
-        &voice,
-        speed,
-        None,
-        None,
-        None,
-        None,
-        |audio| {
-            if cancelled.load(Ordering::SeqCst) {
-                return Err("cancelled".into());
-            }
+    let mut synth_err: Option<anyhow::Error> = None;
+    let cancel_flag = cancelled.clone();
+    let mut provider = provider;
+    let mut active_voice = vp.voice.clone();
+    let mut active_model = model;
+    let mut fell_back = false;
+    let sents = providers::sentences(&text);
+    let mut i = 0;
+    while i < sents.len() {
+        if cancelled.load(Ordering::SeqCst) {
+            break;
+        }
+        let req = SynthReq {
+            text: &sents[i],
+            model: &active_model,
+            voice: &active_voice,
+            speed,
+        };
+        let result = provider.synth(&req, &mut |audio| {
             if first_audio.is_none() {
                 let t = t0.elapsed().as_secs_f32();
                 first_audio = Some(t);
@@ -523,12 +657,48 @@ async fn main() -> Result<()> {
                     t - load.as_secs_f32()
                 );
             }
-            play.append(&audio);
-            Ok(())
-        },
-    );
+            play.append(audio);
+            !cancel_flag.load(Ordering::SeqCst)
+        });
+        match result {
+            Ok(_) => i += 1,
+            // Cloud provider failed: remember why (menus gray it out), then
+            // fall back to local kokoro so the readout still gets spoken.
+            Err(e) if provider.name() != "kokoro" && !fell_back => {
+                let name = provider.name();
+                let reason = providers::short_reason(&format!("{e:#}"));
+                config::record_provider_error(name, &reason);
+                config::log_event(
+                    "error",
+                    "vox",
+                    &format!("{name}: {e:#} — falling back to kokoro"),
+                );
+                eprintln!("{name} failed ({reason}) — falling back to kokoro");
+                notify_headless(&format!("{name} failed ({reason}) — using Kokoro instead"));
+                let (model_path, voices_path) = ensure_models()?;
+                let tts = TTSKoko::new(
+                    model_path.to_str().context("bad model path")?,
+                    voices_path.to_str().context("bad voices path")?,
+                )
+                .await;
+                provider = Box::new(providers::kokoro::Kokoro { tts });
+                active_voice = "bm_george".into();
+                active_model = "v1.0".into();
+                fell_back = true;
+                // retry the same sentence on kokoro
+            }
+            Err(e) => {
+                synth_err = Some(e);
+                break;
+            }
+        }
+    }
+    // a full run on a cloud provider clears its recorded error
+    if !fell_back && synth_err.is_none() && provider.name() != "kokoro" && !sents.is_empty() {
+        config::clear_provider_error(provider.name());
+    }
     play.synth_done.store(true, Ordering::SeqCst);
-    if let Err(e) = synth_result {
+    if let Some(e) = synth_err {
         if !cancelled.load(Ordering::SeqCst) {
             let _ = crossterm::terminal::disable_raw_mode();
             bail!("synthesis failed: {e}");
@@ -552,6 +722,14 @@ async fn main() -> Result<()> {
     if let Some(sink) = &sink {
         sink.sleep_until_end();
     }
+    config::log_event(
+        "info",
+        "done",
+        &format!(
+            "{active_voice}{} · {audio_secs:.1}s audio",
+            if fell_back { " (fallback)" } else { "" }
+        ),
+    );
     cancelled.store(true, Ordering::SeqCst); // ends the key listener
     let _ = crossterm::terminal::disable_raw_mode();
     Ok(())

@@ -167,5 +167,6 @@ else
   SAVE_ARGS+=(--no-save)
 fi
 
-vox --stop >/dev/null 2>&1
+# No `vox --stop` here: overlapping readouts queue on the playback lock
+# inside vox instead of interrupting whatever is already speaking.
 exec vox ${SAVE_ARGS[@]+"${SAVE_ARGS[@]}"} -v "$VOICE" -s "$SPEED" "$SPOKEN" >/dev/null 2>&1
