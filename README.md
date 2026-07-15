@@ -27,6 +27,10 @@ Two data pieces live outside it: the model weights (downloaded once by
 above; vox finds it in its cache dir, or set
 `PIPER_ESPEAKNG_DATA_DIRECTORY`).
 
+Where the model files come from, their SHA256 checksums, provenance, and how
+to fetch them manually (e.g. behind a TLS-inspecting proxy) are in
+[MODELS.md](MODELS.md).
+
 Phonemization is espeak-ng — the same G2P Kokoro was trained with, so
 pronunciation matches the reference Python implementation, including
 proper British phonemes (`en-gb-x-rp`) for the `b*` voices.
@@ -170,7 +174,8 @@ from it (settings saved from the UI still go to the global config.toml).
 - Models cache in `~/Library/Caches/vox` (override with `VOX_CACHE_DIR`).
   `VOX_MODEL_FILE` selects an alternate model file — e.g.
   `kokoro-v1.0.int8.onnx` for the 92 MB int8 model, which is smaller but
-  ~2× slower than fp32 on Apple Silicon.
+  ~2× slower than fp32 on Apple Silicon. See [MODELS.md](MODELS.md) for the
+  download source, checksums, and alternate model files.
 
 ## Performance (M1 Pro, 32 GB)
 
