@@ -1,9 +1,11 @@
 
 # vox
 
-Local streaming text-to-speech CLI in a single Rust binary. Kokoro-82M via
-ONNX Runtime — no cloud, no API keys, no Python. First word in ~1–3 seconds,
-synthesis 2.5–3.6× faster than realtime on an M1 Pro.
+Local streaming text-to-speech CLI in a single Rust binary. The default
+Kokoro-82M engine runs entirely on-device via ONNX Runtime — no cloud, no API
+keys, no Python — with optional cloud providers (OpenAI, ElevenLabs, xAI,
+Groq) when you want them. First word in ~1–3 seconds, synthesis 2.5–3.6×
+faster than realtime on an M1 Pro.
 
 <img width="829" height="1206" alt="Screenshot 2026-07-13 at 1 02 48 PM" src="https://github.com/user-attachments/assets/fc157881-a72c-4732-a8e2-a63375ad12f4" />
 
@@ -152,6 +154,32 @@ terminal UI above — same shared history and settings. See
 export VOX_VOICE=bm_george   # default voice
 export VOX_SPEED=1.15        # default speech speed
 ```
+
+## Providers
+
+Local Kokoro is the default and needs nothing beyond the one-time model
+download above. v0.8.0 adds optional cloud engines: select one by giving
+`-v` a `provider/voice` path (bare names still mean local Kokoro).
+
+```sh
+vox -v openai/alloy "…"         # needs OPENAI_API_KEY
+vox -v elevenlabs/rachel "…"    # needs ELEVENLABS_API_KEY
+vox --list-voices               # every voice, with availability
+vox --list-voices --json        # machine-readable: path, provider, ready
+```
+
+| Provider | Env var |
+|---|---|
+| `kokoro` (local, default) | — none — |
+| `openai` | `OPENAI_API_KEY` |
+| `elevenlabs` | `ELEVENLABS_API_KEY` |
+| `xai` | `XAI_API_KEY` |
+| `groq` | `GROQ_API_KEY` |
+
+Keys are read from these environment variables only — never written to config
+or state files. Ask for a cloud voice without its key set and vox tells you
+which variable to export. Models, per-provider notes, and the
+resolution/fallback design are in [docs/providers.md](docs/providers.md).
 
 ## Per-project settings
 
