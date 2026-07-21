@@ -9,6 +9,8 @@ faster than realtime on an M1 Pro.
 
 <img width="829" height="1206" alt="Screenshot 2026-07-13 at 1 02 48 PM" src="https://github.com/user-attachments/assets/fc157881-a72c-4732-a8e2-a63375ad12f4" />
 
+<img width="196" height="772" alt="Screenshot 2026-07-21 at 6 24 38 PM" src="https://github.com/user-attachments/assets/9e438da6-870f-4b70-8390-a626364edde1" />
+
 <img width="231" height="279" alt="Screenshot 2026-07-13 at 1 12 59 PM" src="https://github.com/user-attachments/assets/5258bdf0-783b-4c40-be74-61a49ec4d7cf" />
 
 ## Install
