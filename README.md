@@ -6,7 +6,11 @@ keys, no Python — with optional cloud providers (OpenAI, ElevenLabs, xAI,
 Groq) when you want them. First word in ~1–3 seconds, synthesis 2.5–3.6×
 faster than realtime on an M1 Pro.
 
+### CLI
 <img width="1340" height="513" alt="Screenshot 2026-07-21 at 6 44 00 PM" src="https://github.com/user-attachments/assets/c7627c29-91e9-47d2-a1a3-98c60c985fcb" />
+
+
+### Mac Tray App
 
 <img width="829" height="1206" alt="Screenshot 2026-07-13 at 1 02 48 PM" src="https://github.com/user-attachments/assets/fc157881-a72c-4732-a8e2-a63375ad12f4" />
 
